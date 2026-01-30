@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Plot from "./PlotlyChart";
 import { loadCSV, CSVRecord } from "../lib/csvLoader";
 import {
@@ -94,19 +94,19 @@ export default function Dashboard() {
     return getYoY(filteredData, metric, endDate);
   }, [filteredData, metric, endDate]);
 
-  const getSeriesPoints = (series: typeof timeseriesData, name: string) => {
+  const getSeriesPoints = useCallback((series: typeof timeseriesData, name: string) => {
     if (!series) return [];
     return series.series.find((entry) => entry.name === name)?.points ?? [];
-  };
+  }, []);
 
   const cum2026Name = `cum_${metric}_2026`;
   const cum2025Name = `cum_${metric}_2025_aligned`;
   const baseline = 100;
 
-  const cum2026Points = getSeriesPoints(timeseriesData, cum2026Name);
-  const cum2025Points = getSeriesPoints(timeseriesData, cum2025Name);
-  const yoySeries = getSeriesPoints(timeseriesData, "yoy_pct");
-  const itemYoySeries = getSeriesPoints(itemTimeseriesData, "yoy_pct");
+  const cum2026Points = useMemo(() => getSeriesPoints(timeseriesData, cum2026Name), [getSeriesPoints, timeseriesData, cum2026Name]);
+  const cum2025Points = useMemo(() => getSeriesPoints(timeseriesData, cum2025Name), [getSeriesPoints, timeseriesData, cum2025Name]);
+  const yoySeries = useMemo(() => getSeriesPoints(timeseriesData, "yoy_pct"), [getSeriesPoints, timeseriesData]);
+  const itemYoySeries = useMemo(() => getSeriesPoints(itemTimeseriesData, "yoy_pct"), [getSeriesPoints, itemTimeseriesData]);
 
   const totalRevenue2026 = progressData.total_2026;
   const targetRevenue = progressData.season_target_revenue;
@@ -117,34 +117,40 @@ export default function Dashboard() {
   const monthYoY = yoyData.yoy_pct.month ?? 0;
   const ytdYoY = yoyData.yoy_pct.ytd ?? 0;
 
-  const itemsForTable = itemsData.map((item) => ({
+  const itemsForTable = useMemo(() => itemsData.map((item) => ({
     item: item.item,
     revenue2026: item.revenue_2026,
     revenue2025: item.revenue_2025,
     yoy: item.yoy,
     progress: item.progress,
-  }));
+  })), [itemsData]);
   const itemRows = itemsForTable;
 
-  const selectedYoYValues = itemYoySeries
-    .map((point) => point.y)
-    .filter((value): value is number => typeof value === "number");
-  const selectedYoyMin = Math.min(
+  const selectedYoYValues = useMemo(() => 
+    itemYoySeries
+      .map((point) => point.y)
+      .filter((value): value is number => typeof value === "number"),
+    [itemYoySeries]
+  );
+  const selectedYoyMin = useMemo(() => Math.min(
     baseline,
     ...(selectedYoYValues.length ? selectedYoYValues : [baseline])
-  );
-  const selectedYoyMax = Math.max(
+  ), [selectedYoYValues, baseline]);
+  const selectedYoyMax = useMemo(() => Math.max(
     baseline,
     ...(selectedYoYValues.length ? selectedYoYValues : [baseline])
-  );
-  const selectedYoyPadding = Math.max(6, (selectedYoyMax - selectedYoyMin) * 0.2);
+  ), [selectedYoYValues, baseline]);
+  const selectedYoyPadding = useMemo(() => Math.max(6, (selectedYoyMax - selectedYoyMin) * 0.2), [selectedYoyMax, selectedYoyMin]);
 
-  const yoyValues = yoySeries
-    .map((point) => point.y)
-    .filter((value): value is number => typeof value === "number");
-  const yoyMin = Math.min(baseline, ...(yoyValues.length ? yoyValues : [baseline]));
-  const yoyMax = Math.max(baseline, ...(yoyValues.length ? yoyValues : [baseline]));
-  const yoyPadding = Math.max(6, (yoyMax - yoyMin) * 0.2);
+  const yoyValues = useMemo(() => 
+    yoySeries
+      .map((point) => point.y)
+      .filter((value): value is number => typeof value === "number"),
+    [yoySeries]
+  );
+  const yoyMin = useMemo(() => Math.min(baseline, ...(yoyValues.length ? yoyValues : [baseline])), [yoyValues, baseline]);
+  const yoyMax = useMemo(() => Math.max(baseline, ...(yoyValues.length ? yoyValues : [baseline])), [yoyValues, baseline]);
+  const yoyPadding = useMemo(() => Math.max(6, (yoyMax - yoyMin) * 0.2), [yoyMax, yoyMin]);
 
   if (loading) {
     return (
