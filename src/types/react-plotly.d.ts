@@ -27,3 +27,9 @@ declare module "react-plotly.js/factory" {
   export default function createPlotlyComponent(plotly: any): React.ComponentType<PlotParams>;
 }
 
+declare module "plotly.js-basic-dist" {
+  const Plotly: any;
+  export default Plotly;
+  export = Plotly;
+}
+
