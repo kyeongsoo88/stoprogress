@@ -114,9 +114,10 @@ export function toCumulative(points: AggregatePoint[]): CumulativePoint[] {
 }
 
 export function formatCurrency(value: number) {
-  return value.toLocaleString("ko-KR", {
+  const formatted = value.toLocaleString("en-US", {
     maximumFractionDigits: 0,
   });
+  return `$${formatted}`;
 }
 
 export function formatPercent(value: number | null | undefined) {

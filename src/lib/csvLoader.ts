@@ -20,7 +20,7 @@ type YearData = {
 
 let csvCache: CSVRecord[] | null = null;
 let csvCacheTime: number = 0;
-const CACHE_TTL = 1000; // 1초 캐시 (개발 중 CSV 수정 시 빠른 반영)
+const CACHE_TTL = 100; // 0.1초 캐시 (개발 중 CSV 수정 시 즉시 반영)
 
 function parseCSV(text: string): Record<string, string>[] {
   const lines = text.trim().split("\n");
@@ -64,86 +64,132 @@ function getKey(row: YearData): string {
   return `${row.date}|${row.Season}|${row.Item}`;
 }
 
+function getMonthDay(date: string): string {
+  return date.slice(5, 10);
+}
+
+function normalizeSeason(season: string): string {
+  return season.trim().toUpperCase();
+}
+
+function comparableSeason(season: string): string {
+  const normalized = normalizeSeason(season);
+  const match = normalized.match(/^([FS])(\d{2})$/);
+  if (!match) {
+    return normalized;
+  }
+  const prefix = match[1];
+  const year = parseInt(match[2], 10);
+  const prevYear = (year + 99) % 100;
+  return `${prefix}${prevYear.toString().padStart(2, "0")}`;
+}
+
+function buildComparisonKey(date: string, season: string, item: string): string {
+  return `${getMonthDay(date)}|${normalizeSeason(season)}|${item}`;
+}
+
+function parseNumber(value: string): number {
+  const normalized = value.replace(/,/g, "");
+  const parsed = parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export async function loadCSV(): Promise<CSVRecord[]> {
   const now = Date.now();
   if (csvCache && now - csvCacheTime < CACHE_TTL) {
     return csvCache;
   }
 
-  // 두 파일을 병렬로 로드
-  const [response2025, response2026] = await Promise.all([
-    fetch("/sales_2025.csv"),
-    fetch("/sales_2026.csv"),
-  ]);
+  try {
+    const [response2025, response2026] = await Promise.all([
+      fetch("/sales_2025.csv"),
+      fetch("/sales_2026.csv"),
+    ]);
 
-  if (!response2025.ok) {
-    throw new Error(`Failed to load sales_2025.csv: ${response2025.status}`);
-  }
-  if (!response2026.ok) {
-    throw new Error(`Failed to load sales_2026.csv: ${response2026.status}`);
-  }
-
-  const [text2025, text2026] = await Promise.all([
-    response2025.text(),
-    response2026.text(),
-  ]);
-
-  const records2025 = parseCSV(text2025) as YearData[];
-  const records2026 = parseCSV(text2026) as YearData[];
-
-  // 2025년 데이터를 키로 맵 생성
-  const map2025 = new Map<string, YearData>();
-  records2025.forEach((row) => {
-    map2025.set(getKey(row), row);
-  });
-
-  // 2026년 데이터를 기준으로 병합
-  const merged: CSVRecord[] = records2026.map((row2026) => {
-    const key = getKey(row2026);
-    const row2025 = map2025.get(key);
-
-    const revenue_2026 = parseFloat(row2026.revenue) || 0;
-    const COGS_2026 = parseFloat(row2026.COGS) || 0;
-    const Discount_2026 = parseFloat(row2026.Discount) || 0;
-
-    const revenue_2025 = row2025 ? parseFloat(row2025.revenue) || 0 : 0;
-    const COGS_2025 = row2025 ? parseFloat(row2025.COGS) || 0 : 0;
-    const Discount_2025 = row2025 ? parseFloat(row2025.Discount) || 0 : 0;
-
-    return {
-      date: row2026.date || "",
-      season: row2026.Season || "",
-      item: row2026.Item || "",
-      revenue_2026,
-      revenue_2025,
-      profit_2026: revenue_2026 - COGS_2026 - Discount_2026,
-      profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
-    };
-  });
-
-  // 2025년에만 있는 데이터도 추가 (2026년에 없는 경우)
-  records2025.forEach((row2025) => {
-    const key = getKey(row2025);
-    const exists = records2026.some((row2026) => getKey(row2026) === key);
-    if (!exists) {
-      const revenue_2025 = parseFloat(row2025.revenue) || 0;
-      const COGS_2025 = parseFloat(row2025.COGS) || 0;
-      const Discount_2025 = parseFloat(row2025.Discount) || 0;
-
-      merged.push({
-        date: row2025.date || "",
-        season: row2025.Season || "",
-        item: row2025.Item || "",
-        revenue_2026: 0,
-        revenue_2025,
-        profit_2026: 0,
-        profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
-      });
+    if (!response2025.ok) {
+      throw new Error(`Failed to load sales_2025.csv: ${response2025.status}`);
     }
-  });
+    if (!response2026.ok) {
+      throw new Error(`Failed to load sales_2026.csv: ${response2026.status}`);
+    }
 
-  csvCache = merged;
-  csvCacheTime = now;
-  return csvCache;
+    const [text2025, text2026] = await Promise.all([
+      response2025.text(),
+      response2026.text(),
+    ]);
+
+    const records2025 = parseCSV(text2025) as YearData[];
+    const records2026 = parseCSV(text2026) as YearData[];
+
+    const map2025 = new Map<string, { revenue: number; COGS: number; Discount: number }>();
+    records2025.forEach((row) => {
+      const key = buildComparisonKey(row.date, row.Season, row.Item);
+      const current = map2025.get(key) ?? { revenue: 0, COGS: 0, Discount: 0 };
+      current.revenue += parseNumber(row.revenue);
+      current.COGS += parseNumber(row.COGS);
+      current.Discount += parseNumber(row.Discount);
+      map2025.set(key, current);
+    });
+
+    const merged: CSVRecord[] = records2026.map((row2026) => {
+      const key = buildComparisonKey(
+        row2026.date,
+        comparableSeason(row2026.Season),
+        row2026.Item
+      );
+      const row2025 = map2025.get(key);
+
+      const revenue_2026 = parseNumber(row2026.revenue);
+      const COGS_2026 = parseNumber(row2026.COGS);
+      const Discount_2026 = parseNumber(row2026.Discount);
+
+      const revenue_2025 = row2025 ? row2025.revenue : 0;
+      const COGS_2025 = row2025 ? row2025.COGS : 0;
+      const Discount_2025 = row2025 ? row2025.Discount : 0;
+
+      return {
+        date: row2026.date || "",
+        season: row2026.Season || "",
+        item: row2026.Item || "",
+        revenue_2026,
+        revenue_2025,
+        profit_2026: revenue_2026 - COGS_2026 - Discount_2026,
+        profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
+      };
+    });
+
+    records2025.forEach((row2025) => {
+      const key = buildComparisonKey(row2025.date, row2025.Season, row2025.Item);
+      const exists = records2026.some((row2026) => {
+        const comparableKey = buildComparisonKey(
+          row2026.date,
+          comparableSeason(row2026.Season),
+          row2026.Item
+        );
+        return comparableKey === key;
+      });
+      if (!exists) {
+        const revenue_2025 = parseNumber(row2025.revenue);
+        const COGS_2025 = parseNumber(row2025.COGS);
+        const Discount_2025 = parseNumber(row2025.Discount);
+
+        merged.push({
+          date: row2025.date || "",
+          season: row2025.Season || "",
+          item: row2025.Item || "",
+          revenue_2026: 0,
+          revenue_2025,
+          profit_2026: 0,
+          profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
+        });
+      }
+    });
+
+    csvCache = merged;
+    csvCacheTime = now;
+    return csvCache;
+  } catch (error) {
+    console.error("CSV 로드 실패:", error);
+    throw new Error("데이터를 로드할 수 없습니다. sales_2025.csv와 sales_2026.csv 파일을 확인해주세요.");
+  }
 }
-

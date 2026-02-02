@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Plot from "./PlotlyChart";
 import { loadCSV, CSVRecord } from "../lib/csvLoader";
 import {
@@ -13,8 +13,6 @@ import {
   MetricKey,
 } from "../lib/aggregate";
 import { formatCurrency, formatPercent } from "../lib/metrics";
-
-const seasons = ["2026 S/S", "2026 F/W"];
 
 const formatDate = (date: string) => date;
 
@@ -30,6 +28,7 @@ export default function Dashboard() {
   const [metric, setMetric] = useState<MetricKey>("revenue");
   const [showYoY, setShowYoY] = useState(true);
   const [show2025Line, setShow2025Line] = useState(true);
+  const [showAllItems, setShowAllItems] = useState(false);
 
   useEffect(() => {
     loadCSV()
@@ -48,6 +47,17 @@ export default function Dashboard() {
       });
   }, []);
 
+  const seasons = useMemo(() => {
+    if (!csvData) return [];
+    const unique = new Set<string>();
+    csvData.forEach((row) => {
+      if (row.season) {
+        unique.add(row.season);
+      }
+    });
+    return Array.from(unique).sort();
+  }, [csvData]);
+
   const filteredData = useMemo(() => {
     if (!csvData) return [];
     return filterData(csvData, { start: startDate, end: endDate, season });
@@ -62,11 +72,6 @@ export default function Dashboard() {
       item: selectedItem,
     });
   }, [csvData, startDate, endDate, season, selectedItem]);
-
-  const timeseriesData = useMemo(() => {
-    if (!filteredData.length) return null;
-    return buildTimeseries(filteredData, unit, metric);
-  }, [filteredData, unit, metric]);
 
   const itemTimeseriesData = useMemo(() => {
     if (!itemFilteredData.length) return null;
@@ -94,19 +99,38 @@ export default function Dashboard() {
     return getYoY(filteredData, metric, endDate);
   }, [filteredData, metric, endDate]);
 
-  const getSeriesPoints = useCallback((series: typeof timeseriesData, name: string) => {
-    if (!series) return [];
-    return series.series.find((entry) => entry.name === name)?.points ?? [];
-  }, []);
-
-  const cum2026Name = `cum_${metric}_2026`;
-  const cum2025Name = `cum_${metric}_2025_aligned`;
   const baseline = 100;
+  const itemYoySeries = useMemo(() => {
+    if (!itemTimeseriesData) return [];
+    return itemTimeseriesData.series.find((entry) => entry.name === "yoy_pct")?.points ?? [];
+  }, [itemTimeseriesData]);
 
-  const cum2026Points = useMemo(() => getSeriesPoints(timeseriesData, cum2026Name), [getSeriesPoints, timeseriesData, cum2026Name]);
-  const cum2025Points = useMemo(() => getSeriesPoints(timeseriesData, cum2025Name), [getSeriesPoints, timeseriesData, cum2025Name]);
-  const yoySeries = useMemo(() => getSeriesPoints(timeseriesData, "yoy_pct"), [getSeriesPoints, timeseriesData]);
-  const itemYoySeries = useMemo(() => getSeriesPoints(itemTimeseriesData, "yoy_pct"), [getSeriesPoints, itemTimeseriesData]);
+  const dailySeries = useMemo(() => {
+    const buckets = new Map<string, { value2026: number; value2025: number }>();
+    itemFilteredData.forEach((row) => {
+      const label = row.date;
+      const existing = buckets.get(label) ?? { value2026: 0, value2025: 0 };
+      if (metric === "profit") {
+        existing.value2026 += row.profit_2026;
+        existing.value2025 += row.profit_2025;
+      } else {
+        existing.value2026 += row.revenue_2026;
+        existing.value2025 += row.revenue_2025;
+      }
+      buckets.set(label, existing);
+    });
+    const labels = Array.from(buckets.keys()).sort();
+    const values2026 = labels.map((label) => Math.round(buckets.get(label)?.value2026 ?? 0));
+    const values2025 = labels.map((label) => Math.round(buckets.get(label)?.value2025 ?? 0));
+    const yoy = labels.map((label) => {
+      const v2026 = buckets.get(label)?.value2026 ?? 0;
+      const v2025 = buckets.get(label)?.value2025 ?? 0;
+      return v2025 > 0 ? Math.round((v2026 / v2025) * 1000) / 10 : null;
+    });
+    const maxValue = Math.max(0, ...values2026, ...values2025);
+    return { labels, values2026, values2025, yoy, maxValue };
+  }, [itemFilteredData, metric]);
+
 
   const totalRevenue2026 = progressData.total_2026;
   const targetRevenue = progressData.season_target_revenue;
@@ -117,14 +141,21 @@ export default function Dashboard() {
   const monthYoY = yoyData.yoy_pct.month ?? 0;
   const ytdYoY = yoyData.yoy_pct.ytd ?? 0;
 
-  const itemsForTable = useMemo(() => itemsData.map((item) => ({
-    item: item.item,
-    revenue2026: item.revenue_2026,
-    revenue2025: item.revenue_2025,
-    yoy: item.yoy,
-    progress: item.progress,
-  })), [itemsData]);
-  const itemRows = itemsForTable;
+  const itemsForTable = useMemo(
+    () =>
+      itemsData
+        .slice()
+        .sort((a, b) => b.revenue_2026 - a.revenue_2026)
+        .map((item) => ({
+          item: item.item,
+          revenue2026: item.revenue_2026,
+          revenue2025: item.revenue_2025,
+          yoy: item.yoy,
+          progress: item.progress,
+        })),
+    [itemsData]
+  );
+  const itemRows = showAllItems ? itemsForTable : itemsForTable.slice(0, 6);
 
   const selectedYoYValues = useMemo(() => 
     itemYoySeries
@@ -132,24 +163,28 @@ export default function Dashboard() {
       .filter((value): value is number => typeof value === "number"),
     [itemYoySeries]
   );
-  const selectedYoyMin = useMemo(() => Math.min(
-    baseline,
-    ...(selectedYoYValues.length ? selectedYoYValues : [baseline])
-  ), [selectedYoYValues, baseline]);
-  const selectedYoyMax = useMemo(() => Math.max(
-    baseline,
-    ...(selectedYoYValues.length ? selectedYoYValues : [baseline])
-  ), [selectedYoYValues, baseline]);
+  const selectedYoyMin = useMemo(() => {
+    if (selectedYoYValues.length === 0) return baseline;
+    return Math.min(baseline, selectedYoYValues.reduce((min, val) => Math.min(min, val), selectedYoYValues[0]));
+  }, [selectedYoYValues, baseline]);
+  const selectedYoyMax = useMemo(() => {
+    if (selectedYoYValues.length === 0) return baseline;
+    return Math.max(baseline, selectedYoYValues.reduce((max, val) => Math.max(max, val), selectedYoYValues[0]));
+  }, [selectedYoYValues, baseline]);
   const selectedYoyPadding = useMemo(() => Math.max(6, (selectedYoyMax - selectedYoyMin) * 0.2), [selectedYoyMax, selectedYoyMin]);
 
-  const yoyValues = useMemo(() => 
-    yoySeries
-      .map((point) => point.y)
-      .filter((value): value is number => typeof value === "number"),
-    [yoySeries]
+  const yoyValues = useMemo(
+    () => dailySeries.yoy.filter((value): value is number => typeof value === "number"),
+    [dailySeries.yoy]
   );
-  const yoyMin = useMemo(() => Math.min(baseline, ...(yoyValues.length ? yoyValues : [baseline])), [yoyValues, baseline]);
-  const yoyMax = useMemo(() => Math.max(baseline, ...(yoyValues.length ? yoyValues : [baseline])), [yoyValues, baseline]);
+  const yoyMin = useMemo(() => {
+    if (yoyValues.length === 0) return baseline;
+    return Math.min(baseline, yoyValues.reduce((min, val) => Math.min(min, val), yoyValues[0]));
+  }, [yoyValues, baseline]);
+  const yoyMax = useMemo(() => {
+    if (yoyValues.length === 0) return baseline;
+    return Math.max(baseline, yoyValues.reduce((max, val) => Math.max(max, val), yoyValues[0]));
+  }, [yoyValues, baseline]);
   const yoyPadding = useMemo(() => Math.max(6, (yoyMax - yoyMin) * 0.2), [yoyMax, yoyMin]);
 
   if (loading) {
@@ -172,7 +207,7 @@ export default function Dashboard() {
             <div style={{ color: "#ef4444", marginBottom: "8px" }}>CSV 로드 실패</div>
             <div className="muted">{error}</div>
             <div className="muted" style={{ marginTop: "16px", fontSize: "14px" }}>
-              public/sales.csv 파일이 존재하는지 확인해주세요.
+              public/sales_2025.csv와 public/sales_2026.csv 파일이 존재하는지 확인해주세요.
             </div>
           </div>
         </div>
@@ -305,96 +340,108 @@ export default function Dashboard() {
 
       <div className="chart-stack">
         <div className="card" style={{ width: "100%" }}>
-          <h3>누적 매출 비교 & YoY</h3>
+          <h3>일별 매출 비교 & YoY</h3>
           <div style={{ width: "100%", overflow: "hidden" }}>
             <Plot
             data={[
               {
-                x: cum2026Points.map((point) => point.x),
-                y: cum2026Points.map((point) => point.y),
+                x: dailySeries.labels,
+                y: dailySeries.values2026,
                 type: "scatter",
                 mode: "lines+markers",
-                name: "2026 누적",
+                name: "2026 일별",
                 line: { color: "#2563eb", width: 3 },
-                yaxis: "y",
-                hovertemplate: "%{x}<br>%{y:,.0f}<extra></extra>",
+                hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
               },
               ...(show2025Line
                 ? [
                     {
-                      x: cum2025Points.map((point) => point.x),
-                      y: cum2025Points.map((point) => point.y),
+                      x: dailySeries.labels,
+                      y: dailySeries.values2025,
                       type: "scatter",
                       mode: "lines+markers",
                       name: "2025 동일기간",
-                      line: { color: "#94a3b8", width: 2, dash: "dot" },
-                      yaxis: "y",
-                      hovertemplate: "%{x}<br>%{y:,.0f}<extra></extra>",
-                    },
-                  ]
-                : []),
-              ...(showYoY
-                ? [
-                    {
-                      x: yoySeries.map((point) => point.x),
-                      y: yoySeries.map((point) => point.y),
-                      type: "scatter",
-                      mode: "lines+markers",
-                      name: "YoY",
-                      line: { color: "#16a34a", width: 3 },
-                      yaxis: "y2",
-                      hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
-                    },
-                    {
-                      x: yoySeries.map((point) => point.x),
-                      y: yoySeries.map(() => baseline),
-                      type: "scatter",
-                      mode: "lines",
-                      name: "100% 기준선",
-                      line: { color: "#64748b", width: 2, dash: "dot" },
-                      yaxis: "y2",
-                      hoverinfo: "skip",
+                      line: { color: "#f59e0b", width: 2, dash: "dot" },
+                      hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
                     },
                   ]
                 : []),
             ]}
             layout={{
               height: 400,
-              margin: { l: 60, r: 20, t: 20, b: 40 },
+              margin: { l: 60, r: 70, t: 20, b: 40 },
               legend: { orientation: "h", y: -0.15 },
               paper_bgcolor: "rgba(0,0,0,0)",
               plot_bgcolor: "#ffffff",
               autosize: true,
               yaxis: {
-                title: metric === "revenue" ? "누적 매출 (원)" : "누적 이익 (원)",
-                tickprefix: metric === "revenue" ? "₩" : "",
+                title: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
+                tickprefix: "$",
                 gridcolor: "#e5e7eb",
                 side: "left",
+                range: [0, Math.max(1, dailySeries.maxValue * 1.1)],
               },
-              yaxis2: {
-                title: "YoY (%)",
-                ticksuffix: "%",
-                gridcolor: "transparent",
-                side: "right",
-                overlaying: "y",
-                range: [yoyMin - yoyPadding, yoyMax + yoyPadding],
-              },
-              xaxis: { gridcolor: "#f1f5f9" },
+              xaxis: { gridcolor: "#f1f5f9", type: "category" },
             }}
             config={{ displayModeBar: false, responsive: true }}
             style={{ width: "100%", height: "100%" }}
           />
           </div>
-          {showYoY && (
+        </div>
+
+        {showYoY && (
+          <div className="card" style={{ width: "100%" }}>
+            <h3>일별 YoY</h3>
+            <div style={{ width: "100%", overflow: "hidden" }}>
+              <Plot
+                data={[
+                  {
+                    x: dailySeries.labels,
+                    y: dailySeries.yoy,
+                    type: "scatter",
+                    mode: "lines+markers",
+                    name: "YoY",
+                    line: { color: "#16a34a", width: 3 },
+                    hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
+                  },
+                  {
+                    x: dailySeries.labels,
+                    y: dailySeries.labels.map(() => baseline),
+                    type: "scatter",
+                    mode: "lines",
+                    name: "100% 기준선",
+                    line: { color: "#64748b", width: 2, dash: "dot" },
+                    hoverinfo: "skip",
+                  },
+                ]}
+                layout={{
+                  height: 260,
+                  margin: { l: 60, r: 30, t: 20, b: 40 },
+                  legend: { orientation: "h", y: -0.2 },
+                  paper_bgcolor: "rgba(0,0,0,0)",
+                  plot_bgcolor: "#ffffff",
+                  autosize: true,
+                  yaxis: {
+                    title: "YoY (%)",
+                    ticksuffix: "%",
+                    range: [yoyMin - yoyPadding, yoyMax + yoyPadding],
+                    gridcolor: "#e5e7eb",
+                  },
+                  xaxis: { title: "Date", gridcolor: "#f1f5f9", type: "category" },
+                }}
+                config={{ displayModeBar: false, responsive: true }}
+                style={{ width: "100%", height: "100%" }}
+              />
+            </div>
             <p className="muted" style={{ marginTop: 8 }}>
               100% = 전년 동일, 100% 초과 = 성장, 100% 미만 = 감소
             </p>
-          )}
-        </div>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div className="card">
-            <h3>Item Drill-down</h3>
+            <h3>Item YoY (일별)</h3>
             <div className="muted">
               선택 Item: {selectedItem === "전체" ? "전체 (모든 아이템 합계)" : selectedItem}
             </div>
@@ -407,6 +454,7 @@ export default function Dashboard() {
                   mode: "lines+markers",
                   name: "Item YoY",
                   line: { color: "#f97316", width: 3 },
+                  marker: { size: 6 },
                   hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
                 },
                 {
@@ -423,21 +471,37 @@ export default function Dashboard() {
                 height: 240,
                 margin: { l: 50, r: 20, t: 20, b: 40 },
                 yaxis: {
+                  title: "YoY (%)",
                   range: [selectedYoyMin - selectedYoyPadding, selectedYoyMax + selectedYoyPadding],
                   ticksuffix: "%",
+                  tickformat: ".0f",
                   gridcolor: "#e5e7eb",
                 },
                 paper_bgcolor: "rgba(0,0,0,0)",
                 plot_bgcolor: "#ffffff",
                 legend: { orientation: "h" },
-                xaxis: { gridcolor: "#f1f5f9" },
+                xaxis: {
+                  title: "Date",
+                  gridcolor: "#f1f5f9",
+                  tickangle: -30,
+                  automargin: true,
+                },
               }}
               config={{ displayModeBar: false, responsive: true }}
             />
           </div>
 
           <div className="card">
-            <h3>Item 성과 테이블</h3>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h3 style={{ marginBottom: 0 }}>Item 성과 테이블</h3>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setShowAllItems((prev) => !prev)}
+              >
+                {showAllItems ? "접기" : "열기"}
+              </button>
+            </div>
             <table className="table">
               <thead>
                 <tr>

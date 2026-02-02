@@ -1,7 +1,7 @@
 {
   "name": "sales-progress-dashboard",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,10 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "^15.1.7",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "next": "15.1.6",
     "plotly.js-basic-dist": "^2.34.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "react-plotly.js": "^2.6.0"
   },
   "devDependencies": {
@@ -20,9 +20,7 @@
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",
     "eslint": "^8.57.0",
-    "eslint-config-next": "^15.1.7",
+    "eslint-config-next": "15.1.6",
     "typescript": "^5.4.5"
   }
 }
-
-
