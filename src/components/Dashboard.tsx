@@ -107,15 +107,24 @@ export default function Dashboard() {
 
   const dailySeries = useMemo(() => {
     const buckets = new Map<string, { value2026: number; value2025: number }>();
+    const counted2025 = new Set<string>();
     itemFilteredData.forEach((row) => {
       const label = row.date;
       const existing = buckets.get(label) ?? { value2026: 0, value2025: 0 };
       if (metric === "profit") {
         existing.value2026 += row.profit_2026;
-        existing.value2025 += row.profit_2025;
+        const key2025 = `${label}|${row.season_2025 ?? row.season}|${row.item}`;
+        if (!counted2025.has(key2025)) {
+          existing.value2025 += row.profit_2025;
+          counted2025.add(key2025);
+        }
       } else {
         existing.value2026 += row.revenue_2026;
-        existing.value2025 += row.revenue_2025;
+        const key2025 = `${label}|${row.season_2025 ?? row.season}|${row.item}`;
+        if (!counted2025.has(key2025)) {
+          existing.value2025 += row.revenue_2025;
+          counted2025.add(key2025);
+        }
       }
       buckets.set(label, existing);
     });
