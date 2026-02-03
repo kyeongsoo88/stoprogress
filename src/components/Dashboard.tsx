@@ -21,7 +21,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [startDate, setStartDate] = useState("2026-01-01");
-  const [endDate, setEndDate] = useState("2026-01-31");
+  const [endDate, setEndDate] = useState("2026-01-30");
   const [season, setSeason] = useState("전체");
   const [selectedItem, setSelectedItem] = useState("전체");
   const [unit, setUnit] = useState<UnitKey>("day");
@@ -36,10 +36,6 @@ export default function Dashboard() {
         setCsvData(data);
         setLoading(false);
         setError(null);
-        if (data.length > 0) {
-          const lastDate = data[data.length - 1].date;
-          setEndDate(lastDate);
-        }
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "CSV 로드 실패");
@@ -137,8 +133,45 @@ export default function Dashboard() {
       return v2025 > 0 ? Math.round((v2026 / v2025) * 1000) / 10 : null;
     });
     const maxValue = Math.max(0, ...values2026, ...values2025);
-    return { labels, values2026, values2025, yoy, maxValue };
+    const minValue = Math.min(0, ...values2026, ...values2025);
+    return { labels, values2026, values2025, yoy, maxValue, minValue };
   }, [itemFilteredData, metric]);
+
+  const dailyCumulativeSeries = useMemo(() => {
+    const labels = dailySeries.labels;
+    let acc2026 = 0;
+    const values2026 = dailySeries.values2026.map((v) => {
+      acc2026 += v;
+      return acc2026;
+    });
+    let acc2025 = 0;
+    const values2025 = dailySeries.values2025.map((v) => {
+      acc2025 += v;
+      return acc2025;
+    });
+    const yoy = labels.map((_, i) => {
+      const v2026 = values2026[i];
+      const v2025 = values2025[i];
+      return v2025 > 0 ? Math.round((v2026 / v2025) * 1000) / 10 : null;
+    });
+    const maxValue = Math.max(0, ...values2026, ...values2025);
+    const minValue = Math.min(0, ...values2026, ...values2025);
+    return { labels, values2026, values2025, yoy, maxValue, minValue };
+  }, [dailySeries]);
+
+  const ytdYoyValues = useMemo(
+    () => dailyCumulativeSeries.yoy.filter((value): value is number => typeof value === "number"),
+    [dailyCumulativeSeries.yoy]
+  );
+  const ytdYoyMin = useMemo(() => {
+    if (ytdYoyValues.length === 0) return baseline;
+    return Math.min(baseline, ytdYoyValues.reduce((min, val) => Math.min(min, val), ytdYoyValues[0]));
+  }, [ytdYoyValues, baseline]);
+  const ytdYoyMax = useMemo(() => {
+    if (ytdYoyValues.length === 0) return baseline;
+    return Math.max(baseline, ytdYoyValues.reduce((max, val) => Math.max(max, val), ytdYoyValues[0]));
+  }, [ytdYoyValues, baseline]);
+  const ytdYoyPadding = useMemo(() => Math.max(6, (ytdYoyMax - ytdYoyMin) * 0.2), [ytdYoyMax, ytdYoyMin]);
 
 
   const totalRevenue2026 = progressData.total_2026;
@@ -278,25 +311,6 @@ export default function Dashboard() {
               ))}
             </select>
           </div>
-          <div>
-            <label>집계 단위</label>
-            <select value={unit} onChange={(event) => setUnit(event.target.value as UnitKey)}>
-              <option value="day">Day</option>
-              <option value="week_fixed_7d">Week (fixed_7d)</option>
-              <option value="week_iso">Week (ISO)</option>
-              <option value="month">Month</option>
-            </select>
-          </div>
-          <div>
-            <label>지표</label>
-            <select
-              value={metric}
-              onChange={(event) => setMetric(event.target.value as MetricKey)}
-            >
-              <option value="revenue">Revenue</option>
-              <option value="profit">Profit</option>
-            </select>
-          </div>
         </div>
         <div style={{ marginTop: 12 }} className="toggle-row">
           <label className="toggle">
@@ -348,55 +362,56 @@ export default function Dashboard() {
       </div>
 
       <div className="chart-stack">
-        <div className="card" style={{ width: "100%" }}>
-          <h3>일별 매출 비교 & YoY</h3>
-          <div style={{ width: "100%", overflow: "hidden" }}>
-            <Plot
-            data={[
-              {
-                x: dailySeries.labels,
-                y: dailySeries.values2026,
-                type: "scatter",
-                mode: "lines+markers",
-                name: "2026 일별",
-                line: { color: "#2563eb", width: 3 },
-                hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
-              },
-              ...(show2025Line
-                ? [
-                    {
-                      x: dailySeries.labels,
-                      y: dailySeries.values2025,
-                      type: "scatter",
-                      mode: "lines+markers",
-                      name: "2025 동일기간",
-                      line: { color: "#f59e0b", width: 2, dash: "dot" },
-                      hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
-                    },
-                  ]
-                : []),
-            ]}
-            layout={{
-              height: 400,
-              margin: { l: 60, r: 70, t: 20, b: 40 },
-              legend: { orientation: "h", y: -0.15 },
-              paper_bgcolor: "rgba(0,0,0,0)",
-              plot_bgcolor: "#ffffff",
-              autosize: true,
-              yaxis: {
-                title: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
-                tickprefix: "$",
-                gridcolor: "#e5e7eb",
-                side: "left",
-                range: [0, Math.max(1, dailySeries.maxValue * 1.1)],
-              },
-              xaxis: { gridcolor: "#f1f5f9", type: "category" },
-            }}
-            config={{ displayModeBar: false, responsive: true }}
-            style={{ width: "100%", height: "100%" }}
-          />
+        <div style={{ display: "grid", gridTemplateColumns: showYoY ? "1fr 1fr" : "1fr", gap: "16px" }}>
+          <div className="card" style={{ width: "100%" }}>
+            <h3>일별 매출 비교</h3>
+            <div style={{ width: "100%", overflow: "hidden" }}>
+              <Plot
+              data={[
+                {
+                  x: dailySeries.labels.map(d => d.slice(5)),
+                  y: dailySeries.values2026,
+                  type: "scatter",
+                  mode: "lines+markers",
+                  name: "2026 일별",
+                  line: { color: "#4f46e5", width: 3 },
+                  hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                },
+                ...(show2025Line
+                  ? [
+                      {
+                        x: dailySeries.labels.map(d => d.slice(5)),
+                        y: dailySeries.values2025,
+                        type: "scatter",
+                        mode: "lines+markers",
+                        name: "2025 동일기간",
+                        line: { color: "#f59e0b", width: 2 },
+                        hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                      },
+                    ]
+                  : []),
+              ]}
+              layout={{
+                height: 350,
+                margin: { l: 60, r: 70, t: 20, b: 40 },
+                legend: { orientation: "h", y: -0.15 },
+                paper_bgcolor: "rgba(0,0,0,0)",
+                plot_bgcolor: "#ffffff",
+                autosize: true,
+                yaxis: {
+                  title: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
+                  tickprefix: "$",
+                  gridcolor: "#e5e7eb",
+                  side: "left",
+                  range: [dailySeries.minValue * 1.1, Math.max(1, dailySeries.maxValue * 1.1)],
+                },
+                xaxis: { gridcolor: "#f1f5f9", type: "category" },
+              }}
+              config={{ displayModeBar: false, responsive: true }}
+              style={{ width: "100%", height: "100%" }}
+            />
+            </div>
           </div>
-        </div>
 
         {showYoY && (
           <div className="card" style={{ width: "100%" }}>
@@ -405,7 +420,7 @@ export default function Dashboard() {
               <Plot
                 data={[
                   {
-                    x: dailySeries.labels,
+                    x: dailySeries.labels.map(d => d.slice(5)),
                     y: dailySeries.yoy,
                     type: "scatter",
                     mode: "lines+markers",
@@ -414,7 +429,7 @@ export default function Dashboard() {
                     hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
                   },
                   {
-                    x: dailySeries.labels,
+                    x: dailySeries.labels.map(d => d.slice(5)),
                     y: dailySeries.labels.map(() => baseline),
                     type: "scatter",
                     mode: "lines",
@@ -424,7 +439,7 @@ export default function Dashboard() {
                   },
                 ]}
                 layout={{
-                  height: 260,
+                  height: 350,
                   margin: { l: 60, r: 30, t: 20, b: 40 },
                   legend: { orientation: "h", y: -0.2 },
                   paper_bgcolor: "rgba(0,0,0,0)",
@@ -447,6 +462,108 @@ export default function Dashboard() {
             </p>
           </div>
         )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: showYoY ? "1fr 1fr" : "1fr", gap: "16px", marginTop: "16px" }}>
+          <div className="card" style={{ width: "100%" }}>
+            <h3>{metric === "revenue" ? "일별 매출 YTD" : "일별 이익 YTD"}</h3>
+            <div style={{ width: "100%", overflow: "hidden" }}>
+              <Plot
+                data={[
+                  {
+                    x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
+                    y: dailyCumulativeSeries.values2026,
+                    type: "scatter",
+                    mode: "lines+markers",
+                    name: "2026 누적",
+                    line: { color: "#4f46e5", width: 3 },
+                    hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                  },
+                  ...(show2025Line
+                    ? [
+                        {
+                          x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
+                          y: dailyCumulativeSeries.values2025,
+                          type: "scatter",
+                          mode: "lines+markers",
+                          name: "2025 누적",
+                          line: { color: "#f59e0b", width: 2 },
+                          hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                        },
+                      ]
+                    : []),
+                ]}
+                layout={{
+                  height: 350,
+                  margin: { l: 60, r: 70, t: 20, b: 40 },
+                  legend: { orientation: "h", y: -0.15 },
+                  paper_bgcolor: "rgba(0,0,0,0)",
+                  plot_bgcolor: "#ffffff",
+                  autosize: true,
+                  yaxis: {
+                    title: metric === "revenue" ? "누적 매출 (USD)" : "누적 이익 (USD)",
+                    tickprefix: "$",
+                    gridcolor: "#e5e7eb",
+                    side: "left",
+                    range: [dailyCumulativeSeries.minValue * 1.1, Math.max(1, dailyCumulativeSeries.maxValue * 1.1)],
+                  },
+                  xaxis: { gridcolor: "#f1f5f9", type: "category" },
+                }}
+                config={{ displayModeBar: false, responsive: true }}
+                style={{ width: "100%", height: "100%" }}
+              />
+            </div>
+          </div>
+          {showYoY && (
+            <div className="card" style={{ width: "100%" }}>
+              <h3>YTD YoY</h3>
+              <div style={{ width: "100%", overflow: "hidden" }}>
+                <Plot
+                  data={[
+                    {
+                      x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
+                      y: dailyCumulativeSeries.yoy,
+                      type: "scatter",
+                      mode: "lines+markers",
+                      name: "YTD YoY",
+                      line: { color: "#16a34a", width: 3 },
+                      hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
+                    },
+                    {
+                      x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
+                      y: dailyCumulativeSeries.labels.map(() => baseline),
+                      type: "scatter",
+                      mode: "lines",
+                      name: "100% 기준선",
+                      line: { color: "#64748b", width: 2, dash: "dot" },
+                      hoverinfo: "skip",
+                    },
+                  ]}
+                  layout={{
+                    height: 350,
+                    margin: { l: 60, r: 30, t: 20, b: 40 },
+                    legend: { orientation: "h", y: -0.2 },
+                    paper_bgcolor: "rgba(0,0,0,0)",
+                    plot_bgcolor: "#ffffff",
+                    autosize: true,
+                    yaxis: {
+                      title: "YoY (%)",
+                      ticksuffix: "%",
+                      range: [ytdYoyMin - ytdYoyPadding, ytdYoyMax + ytdYoyPadding],
+                      gridcolor: "#e5e7eb",
+                    },
+                    xaxis: { title: "Date", gridcolor: "#f1f5f9", type: "category" },
+                  }}
+                  config={{ displayModeBar: false, responsive: true }}
+                  style={{ width: "100%", height: "100%" }}
+                />
+              </div>
+              <p className="muted" style={{ marginTop: 8 }}>
+                100% = 전년 동일, 100% 초과 = 성장, 100% 미만 = 감소
+              </p>
+            </div>
+          )}
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div className="card">
