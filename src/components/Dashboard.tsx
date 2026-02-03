@@ -178,10 +178,106 @@ export default function Dashboard() {
   const targetRevenue = progressData.season_target_revenue;
   const seasonProgress = progressData.season_progress;
 
-  const todayYoY = yoyData.yoy_pct.today ?? 0;
-  const weekYoY = yoyData.yoy_pct.week ?? 0;
-  const monthYoY = yoyData.yoy_pct.month ?? 0;
-  const ytdYoY = yoyData.yoy_pct.ytd ?? 0;
+  // 기간매출: 설정한 기간의 2026년 매출 합계 (Item, 기간, Season AND 조건)
+  const periodRevenue = useMemo(() => {
+    if (!itemFilteredData.length) return 0;
+    let sum = 0;
+    itemFilteredData.forEach((row) => {
+      sum += row.revenue_2026;
+    });
+    return sum;
+  }, [itemFilteredData]);
+
+  // 기간 YoY: 설정한 기간의 2026년 매출 대비 2025년 매출 YoY %
+  // dailySeries와 동일한 로직 사용 (날짜별 버킷, 2025는 중복 제거)
+  // Item, 기간, Season을 AND 조건으로 적용
+  const periodYoY = useMemo(() => {
+    if (!itemFilteredData.length) return null;
+    const buckets = new Map<string, { value2026: number; value2025: number }>();
+    const counted2025 = new Set<string>();
+    
+    itemFilteredData.forEach((row) => {
+      const label = row.date;
+      const existing = buckets.get(label) ?? { value2026: 0, value2025: 0 };
+      
+      // 2026은 모두 합산
+      existing.value2026 += row.revenue_2026;
+      
+      // 2025는 중복 제거 (같은 날짜-시즌-아이템 조합은 한 번만)
+      // season_2025를 우선 사용 (csvLoader에서 항상 설정됨)
+      const seasonKey = row.season_2025 || row.season;
+      const key2025 = `${label}|${seasonKey}|${row.item}`;
+      if (!counted2025.has(key2025)) {
+        existing.value2025 += row.revenue_2025;
+        counted2025.add(key2025);
+      }
+      
+      buckets.set(label, existing);
+    });
+    
+    // 전체 합계 계산
+    let sum2026 = 0;
+    let sum2025 = 0;
+    buckets.forEach((values) => {
+      sum2026 += values.value2026;
+      sum2025 += values.value2025;
+    });
+    
+    // 디버깅: 콘솔에 출력
+    if (startDate === "2026-01-01" && endDate === "2026-01-30") {
+      console.log("기간 YoY 계산:", {
+        startDate,
+        endDate,
+        selectedItem,
+        season,
+        sum2026,
+        sum2025,
+        yoy: sum2025 > 0 ? ((sum2026 / sum2025) * 100) : null,
+        filteredDataCount: itemFilteredData.length,
+        bucketCount: buckets.size,
+        counted2025Size: counted2025.size,
+      });
+    }
+    
+    if (sum2025 === 0) return null;
+    return Math.round(((sum2026 / sum2025) * 100) * 10) / 10;
+  }, [itemFilteredData, startDate, endDate, selectedItem, season]);
+
+  // 기간 할인율: 1 - (Revenue 합 / MSRP 합) * 100
+  // Item, 기간, Season을 AND 조건으로 적용
+  // 전년대비: 2026 할인율 - 2025 할인율
+  const periodDiscountRate = useMemo(() => {
+    if (!itemFilteredData.length) return null;
+    let sumRevenue2026 = 0;
+    let sumMSRP2026 = 0;
+    let sumRevenue2025 = 0;
+    let sumMSRP2025 = 0;
+    
+    itemFilteredData.forEach((row) => {
+      sumRevenue2026 += row.revenue_2026;
+      sumMSRP2026 += row.msrp_2026;
+      sumRevenue2025 += row.revenue_2025;
+      sumMSRP2025 += row.msrp_2025;
+    });
+    
+    if (sumMSRP2026 === 0) return null;
+    const discountRate2026 = (1 - sumRevenue2026 / sumMSRP2026) * 100;
+    
+    let discountRate2025: number | null = null;
+    if (sumMSRP2025 > 0) {
+      discountRate2025 = (1 - sumRevenue2025 / sumMSRP2025) * 100;
+    }
+    
+    const yearOverYear = discountRate2025 !== null 
+      ? discountRate2026 - discountRate2025 
+      : null;
+    
+    return {
+      rate2026: Math.round(discountRate2026 * 10) / 10,
+      rate2025: discountRate2025 !== null ? Math.round(discountRate2025 * 10) / 10 : null,
+      yearOverYear: yearOverYear !== null ? Math.round(yearOverYear * 10) / 10 : null,
+    };
+  }, [itemFilteredData]);
 
   const itemsForTable = useMemo(
     () =>
@@ -189,11 +285,11 @@ export default function Dashboard() {
         .slice()
         .sort((a, b) => b.revenue_2026 - a.revenue_2026)
         .map((item) => ({
-          item: item.item,
-          revenue2026: item.revenue_2026,
-          revenue2025: item.revenue_2025,
-          yoy: item.yoy,
-          progress: item.progress,
+    item: item.item,
+    revenue2026: item.revenue_2026,
+    revenue2025: item.revenue_2025,
+    yoy: item.yoy,
+    progress: item.progress,
         })),
     [itemsData]
   );
@@ -340,72 +436,106 @@ export default function Dashboard() {
 
       <div className="kpi-grid">
         <div className="card">
-          <div className="muted">오늘 YoY</div>
-          <div className="kpi-value">{formatPercent(todayYoY)}</div>
-          <div className="muted">{formatDate(endDate)}</div>
+          <div className="muted">기간매출</div>
+          <div className="kpi-value">{formatCurrency(periodRevenue)}</div>
+          <div className="muted">{startDate} ~ {endDate}</div>
         </div>
         <div className="card">
-          <div className="muted">이번주 YoY</div>
-          <div className="kpi-value">{formatPercent(weekYoY)}</div>
-          <div className="muted">fixed_7d 기준</div>
+          <div className="muted">기간 YoY</div>
+          <div className="kpi-value">{periodYoY !== null ? formatPercent(periodYoY) : "N/A"}</div>
+          <div className="muted">{startDate} ~ {endDate}</div>
         </div>
         <div className="card">
-          <div className="muted">이번달 YoY</div>
-          <div className="kpi-value">{formatPercent(monthYoY)}</div>
-          <div className="muted">Month 기준</div>
-        </div>
-        <div className="card">
-          <div className="muted">YTD YoY</div>
-          <div className="kpi-value">{formatPercent(ytdYoY)}</div>
-          <div className="muted">2026-01-01 ~ {formatDate(endDate)}</div>
+          <div className="muted">기간 할인율</div>
+          <div className="kpi-value">
+            {periodDiscountRate !== null ? (
+              <>
+                {formatPercent(periodDiscountRate.rate2026)}
+                {periodDiscountRate.yearOverYear !== null && (
+                  <span style={{ fontSize: "0.7em", color: "#6b7280", marginLeft: "8px" }}>
+                    (전년대비: {periodDiscountRate.yearOverYear >= 0 ? "+" : ""}{formatPercent(periodDiscountRate.yearOverYear)})
+                  </span>
+                )}
+              </>
+            ) : (
+              "N/A"
+            )}
+          </div>
+          <div className="muted">{startDate} ~ {endDate}</div>
         </div>
       </div>
 
       <div className="chart-stack">
         <div style={{ display: "grid", gridTemplateColumns: showYoY ? "1fr 1fr" : "1fr", gap: "16px" }}>
-          <div className="card" style={{ width: "100%" }}>
+        <div className="card" style={{ width: "100%" }}>
             <h3>일별 매출 비교</h3>
-            <div style={{ width: "100%", overflow: "hidden" }}>
-              <Plot
-              data={[
-                {
+          <div style={{ width: "100%", overflow: "hidden" }}>
+            <Plot
+            data={[
+              {
                   x: dailySeries.labels.map(d => d.slice(5)),
                   y: dailySeries.values2026,
-                  type: "scatter",
-                  mode: "lines+markers",
+                type: "scatter",
+                mode: "lines+markers",
                   name: "2026 일별",
-                  line: { color: "#4f46e5", width: 3 },
-                  hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
-                },
-                ...(show2025Line
-                  ? [
-                      {
+                  line: { color: "#4f46e5", width: 3.5, shape: "spline", smoothing: 1.3 },
+                  marker: { size: 6, color: "#4f46e5", line: { width: 1.5, color: "#ffffff" } },
+                  hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+                  fill: "tozeroy",
+                  fillcolor: "rgba(79, 70, 229, 0.08)",
+              },
+              ...(show2025Line
+                ? [
+                    {
                         x: dailySeries.labels.map(d => d.slice(5)),
                         y: dailySeries.values2025,
-                        type: "scatter",
-                        mode: "lines+markers",
-                        name: "2025 동일기간",
-                        line: { color: "#f59e0b", width: 2 },
-                        hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
-                      },
-                    ]
-                  : []),
+                      type: "scatter",
+                      mode: "lines+markers",
+                      name: "2025 동일기간",
+                        line: { color: "#f59e0b", width: 3, shape: "spline", smoothing: 1.3 },
+                        marker: { size: 5, color: "#f59e0b", line: { width: 1.5, color: "#ffffff" } },
+                        hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+                    },
+                  ]
+                : []),
               ]}
               layout={{
                 height: 350,
-                margin: { l: 60, r: 70, t: 20, b: 40 },
-                legend: { orientation: "h", y: -0.15 },
+                margin: { l: 70, r: 80, t: 30, b: 50 },
+                legend: { 
+                  orientation: "h", 
+                  y: -0.18,
+                  x: 0.5,
+                  xanchor: "center",
+                  font: { size: 13, family: "Pretendard" },
+                  bgcolor: "rgba(255,255,255,0.8)",
+                  bordercolor: "rgba(226,232,240,0.5)",
+                  borderwidth: 1,
+                },
                 paper_bgcolor: "rgba(0,0,0,0)",
-                plot_bgcolor: "#ffffff",
+                plot_bgcolor: "#fafbfc",
                 autosize: true,
+                font: { family: "Pretendard", size: 12, color: "#334155" },
                 yaxis: {
-                  title: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
+                  title: { 
+                    text: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
+                    font: { size: 13, color: "#475569", family: "Pretendard" }
+                  },
                   tickprefix: "$",
-                  gridcolor: "#e5e7eb",
+                  tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                  gridcolor: "#e2e8f0",
+                  gridwidth: 1,
+                  zeroline: false,
                   side: "left",
                   range: [dailySeries.minValue * 1.1, Math.max(1, dailySeries.maxValue * 1.1)],
                 },
-                xaxis: { gridcolor: "#f1f5f9", type: "category" },
+                xaxis: { 
+                  gridcolor: "#f1f5f9", 
+                  gridwidth: 1,
+                  type: "category",
+                  tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                  title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
+                },
               }}
               config={{ displayModeBar: false, responsive: true }}
               style={{ width: "100%", height: "100%" }}
@@ -425,8 +555,11 @@ export default function Dashboard() {
                     type: "scatter",
                     mode: "lines+markers",
                     name: "YoY",
-                    line: { color: "#16a34a", width: 3 },
-                    hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
+                    line: { color: "#10b981", width: 3.5, shape: "spline", smoothing: 1.3 },
+                    marker: { size: 6, color: "#10b981", line: { width: 1.5, color: "#ffffff" } },
+                    hovertemplate: "<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
+                    fill: "tozeroy",
+                    fillcolor: "rgba(16, 185, 129, 0.08)",
                   },
                   {
                     x: dailySeries.labels.map(d => d.slice(5)),
@@ -434,24 +567,48 @@ export default function Dashboard() {
                     type: "scatter",
                     mode: "lines",
                     name: "100% 기준선",
-                    line: { color: "#64748b", width: 2, dash: "dot" },
+                    line: { color: "#94a3b8", width: 2.5, dash: "dash" },
                     hoverinfo: "skip",
                   },
                 ]}
                 layout={{
                   height: 350,
-                  margin: { l: 60, r: 30, t: 20, b: 40 },
-                  legend: { orientation: "h", y: -0.2 },
-                  paper_bgcolor: "rgba(0,0,0,0)",
-                  plot_bgcolor: "#ffffff",
-                  autosize: true,
-                  yaxis: {
-                    title: "YoY (%)",
-                    ticksuffix: "%",
-                    range: [yoyMin - yoyPadding, yoyMax + yoyPadding],
-                    gridcolor: "#e5e7eb",
+                  margin: { l: 70, r: 40, t: 30, b: 50 },
+                  legend: { 
+                    orientation: "h", 
+                    y: -0.2,
+                    x: 0.5,
+                    xanchor: "center",
+                    font: { size: 13, family: "Pretendard" },
+                    bgcolor: "rgba(255,255,255,0.8)",
+                    bordercolor: "rgba(226,232,240,0.5)",
+                    borderwidth: 1,
                   },
-                  xaxis: { title: "Date", gridcolor: "#f1f5f9", type: "category" },
+                  paper_bgcolor: "rgba(0,0,0,0)",
+                  plot_bgcolor: "#fafbfc",
+                  autosize: true,
+                  font: { family: "Pretendard", size: 12, color: "#334155" },
+                  yaxis: {
+                    title: { 
+                      text: "YoY (%)",
+                      font: { size: 13, color: "#475569", family: "Pretendard" }
+                    },
+                    ticksuffix: "%",
+                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                    range: [yoyMin - yoyPadding, yoyMax + yoyPadding],
+                    gridcolor: "#e2e8f0",
+                    gridwidth: 1,
+                    zeroline: true,
+                    zerolinecolor: "#94a3b8",
+                    zerolinewidth: 2.5,
+                  },
+                  xaxis: { 
+                    title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
+                    gridcolor: "#f1f5f9",
+                    gridwidth: 1,
+                    type: "category",
+                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                  },
                 }}
                 config={{ displayModeBar: false, responsive: true }}
                 style={{ width: "100%", height: "100%" }}
@@ -476,8 +633,11 @@ export default function Dashboard() {
                     type: "scatter",
                     mode: "lines+markers",
                     name: "2026 누적",
-                    line: { color: "#4f46e5", width: 3 },
-                    hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                    line: { color: "#4f46e5", width: 3.5, shape: "spline", smoothing: 1.3 },
+                    marker: { size: 6, color: "#4f46e5", line: { width: 1.5, color: "#ffffff" } },
+                    hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+                    fill: "tozeroy",
+                    fillcolor: "rgba(79, 70, 229, 0.08)",
                   },
                   ...(show2025Line
                     ? [
@@ -487,27 +647,50 @@ export default function Dashboard() {
                           type: "scatter",
                           mode: "lines+markers",
                           name: "2025 누적",
-                          line: { color: "#f59e0b", width: 2 },
-                          hovertemplate: "%{x}<br>$%{y:,.0f}<extra></extra>",
+                          line: { color: "#f59e0b", width: 3, shape: "spline", smoothing: 1.3 },
+                          marker: { size: 5, color: "#f59e0b", line: { width: 1.5, color: "#ffffff" } },
+                          hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
                         },
                       ]
                     : []),
                 ]}
                 layout={{
                   height: 350,
-                  margin: { l: 60, r: 70, t: 20, b: 40 },
-                  legend: { orientation: "h", y: -0.15 },
+                  margin: { l: 70, r: 80, t: 30, b: 50 },
+                  legend: { 
+                    orientation: "h", 
+                    y: -0.18,
+                    x: 0.5,
+                    xanchor: "center",
+                    font: { size: 13, family: "Pretendard" },
+                    bgcolor: "rgba(255,255,255,0.8)",
+                    bordercolor: "rgba(226,232,240,0.5)",
+                    borderwidth: 1,
+                  },
                   paper_bgcolor: "rgba(0,0,0,0)",
-                  plot_bgcolor: "#ffffff",
+                  plot_bgcolor: "#fafbfc",
                   autosize: true,
+                  font: { family: "Pretendard", size: 12, color: "#334155" },
                   yaxis: {
-                    title: metric === "revenue" ? "누적 매출 (USD)" : "누적 이익 (USD)",
+                    title: { 
+                      text: metric === "revenue" ? "누적 매출 (USD)" : "누적 이익 (USD)",
+                      font: { size: 13, color: "#475569", family: "Pretendard" }
+                    },
                     tickprefix: "$",
-                    gridcolor: "#e5e7eb",
+                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                    gridcolor: "#e2e8f0",
+                    gridwidth: 1,
+                    zeroline: false,
                     side: "left",
                     range: [dailyCumulativeSeries.minValue * 1.1, Math.max(1, dailyCumulativeSeries.maxValue * 1.1)],
                   },
-                  xaxis: { gridcolor: "#f1f5f9", type: "category" },
+                  xaxis: { 
+                    gridcolor: "#f1f5f9",
+                    gridwidth: 1,
+                    type: "category",
+                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                    title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
+                  },
                 }}
                 config={{ displayModeBar: false, responsive: true }}
                 style={{ width: "100%", height: "100%" }}
@@ -526,8 +709,11 @@ export default function Dashboard() {
                       type: "scatter",
                       mode: "lines+markers",
                       name: "YTD YoY",
-                      line: { color: "#16a34a", width: 3 },
-                      hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
+                      line: { color: "#10b981", width: 3.5, shape: "spline", smoothing: 1.3 },
+                      marker: { size: 6, color: "#10b981", line: { width: 1.5, color: "#ffffff" } },
+                      hovertemplate: "<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
+                      fill: "tozeroy",
+                      fillcolor: "rgba(16, 185, 129, 0.08)",
                     },
                     {
                       x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
@@ -535,32 +721,56 @@ export default function Dashboard() {
                       type: "scatter",
                       mode: "lines",
                       name: "100% 기준선",
-                      line: { color: "#64748b", width: 2, dash: "dot" },
+                      line: { color: "#94a3b8", width: 2.5, dash: "dash" },
                       hoverinfo: "skip",
                     },
-                  ]}
-                  layout={{
+            ]}
+            layout={{
                     height: 350,
-                    margin: { l: 60, r: 30, t: 20, b: 40 },
-                    legend: { orientation: "h", y: -0.2 },
-                    paper_bgcolor: "rgba(0,0,0,0)",
-                    plot_bgcolor: "#ffffff",
-                    autosize: true,
-                    yaxis: {
-                      title: "YoY (%)",
-                      ticksuffix: "%",
-                      range: [ytdYoyMin - ytdYoyPadding, ytdYoyMax + ytdYoyPadding],
-                      gridcolor: "#e5e7eb",
+                    margin: { l: 70, r: 40, t: 30, b: 50 },
+                    legend: { 
+                      orientation: "h", 
+                      y: -0.2,
+                      x: 0.5,
+                      xanchor: "center",
+                      font: { size: 13, family: "Pretendard" },
+                      bgcolor: "rgba(255,255,255,0.8)",
+                      bordercolor: "rgba(226,232,240,0.5)",
+                      borderwidth: 1,
                     },
-                    xaxis: { title: "Date", gridcolor: "#f1f5f9", type: "category" },
-                  }}
-                  config={{ displayModeBar: false, responsive: true }}
-                  style={{ width: "100%", height: "100%" }}
-                />
-              </div>
-              <p className="muted" style={{ marginTop: 8 }}>
-                100% = 전년 동일, 100% 초과 = 성장, 100% 미만 = 감소
-              </p>
+              paper_bgcolor: "rgba(0,0,0,0)",
+              plot_bgcolor: "#fafbfc",
+              autosize: true,
+              font: { family: "Pretendard", size: 12, color: "#334155" },
+              yaxis: {
+                title: { 
+                  text: "YoY (%)",
+                  font: { size: 13, color: "#475569", family: "Pretendard" }
+                },
+                ticksuffix: "%",
+                      tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                      range: [ytdYoyMin - ytdYoyPadding, ytdYoyMax + ytdYoyPadding],
+                      gridcolor: "#e2e8f0",
+                      gridwidth: 1,
+                      zeroline: true,
+                      zerolinecolor: "#94a3b8",
+                      zerolinewidth: 2.5,
+                    },
+                    xaxis: { 
+                      title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
+                      gridcolor: "#f1f5f9",
+                      gridwidth: 1,
+                      type: "category",
+                      tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
+                    },
+            }}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: "100%", height: "100%" }}
+          />
+          </div>
+            <p className="muted" style={{ marginTop: 8 }}>
+              100% = 전년 동일, 100% 초과 = 성장, 100% 미만 = 감소
+            </p>
             </div>
           )}
         </div>

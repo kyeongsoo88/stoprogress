@@ -7,6 +7,8 @@ export type CSVRecord = {
   revenue_2025: number;
   profit_2026: number;
   profit_2025: number;
+  msrp_2026: number;
+  msrp_2025: number;
 };
 
 type YearData = {
@@ -133,13 +135,14 @@ export async function loadCSV(): Promise<CSVRecord[]> {
     const records2026 = parseCSV(text2026) as YearData[];
 
     // 1. 2025 데이터 미리 합산 (중복 행 제거)
-    const map2025 = new Map<string, { revenue: number; COGS: number; Discount: number; season: string; item: string; date: string }>();
+    const map2025 = new Map<string, { revenue: number; COGS: number; Discount: number; MSRP: number; season: string; item: string; date: string }>();
     records2025.forEach((row) => {
       const key = buildComparisonKey(row.date, row.Season, row.Item);
       const current = map2025.get(key) ?? { 
         revenue: 0, 
         COGS: 0, 
-        Discount: 0, 
+        Discount: 0,
+        MSRP: 0,
         season: row.Season, 
         item: row.Item,
         date: row.date
@@ -147,6 +150,7 @@ export async function loadCSV(): Promise<CSVRecord[]> {
       current.revenue += parseNumber(row.revenue);
       current.COGS += parseNumber(row.COGS);
       current.Discount += parseNumber(row.Discount);
+      current.MSRP += parseNumber(row.MSRP);
       map2025.set(key, current);
     });
 
@@ -167,10 +171,12 @@ export async function loadCSV(): Promise<CSVRecord[]> {
       const revenue_2026 = parseNumber(row2026.revenue);
       const COGS_2026 = parseNumber(row2026.COGS);
       const Discount_2026 = parseNumber(row2026.Discount);
+      const msrp_2026 = parseNumber(row2026.MSRP);
 
       const revenue_2025 = row2025 ? row2025.revenue : 0;
       const COGS_2025 = row2025 ? row2025.COGS : 0;
       const Discount_2025 = row2025 ? row2025.Discount : 0;
+      const msrp_2025 = row2025 ? row2025.MSRP : 0;
 
       return {
         date: row2026.date || "",
@@ -181,6 +187,8 @@ export async function loadCSV(): Promise<CSVRecord[]> {
         revenue_2025,
         profit_2026: revenue_2026 - COGS_2026 - Discount_2026,
         profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
+        msrp_2026,
+        msrp_2025,
       };
     });
 
@@ -190,6 +198,7 @@ export async function loadCSV(): Promise<CSVRecord[]> {
         const revenue_2025 = value.revenue;
         const COGS_2025 = value.COGS;
         const Discount_2025 = value.Discount;
+        const msrp_2025 = value.MSRP;
 
         // 2025 날짜를 2026 날짜로 변환 (필터링 및 정렬을 위해)
         const alignedDate = value.date.replace("2025", "2026");
@@ -205,6 +214,8 @@ export async function loadCSV(): Promise<CSVRecord[]> {
           revenue_2025,
           profit_2026: 0,
           profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
+          msrp_2026: 0,
+          msrp_2025,
         });
       }
     });
