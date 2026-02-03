@@ -279,6 +279,83 @@ export default function Dashboard() {
     };
   }, [itemFilteredData]);
 
+  // 이번달 예상 매출 (전년 동기 진척률 기반)
+  // startDate를 기준으로 해당 월을 판단하여 예측
+  const monthForecast = useMemo(() => {
+    if (!csvData || !startDate || !endDate) return null;
+
+    // 1. startDate를 기준으로 해당 월 판단
+    const startObj = new Date(startDate);
+    if (isNaN(startObj.getTime())) return null;
+
+    const year = startObj.getFullYear(); // 2026
+    const month = startObj.getMonth(); // 0-indexed
+    const endObj = new Date(endDate);
+    const endDay = endObj.getDate(); // endDate의 날짜 (예: 28일)
+
+    // 이번달 시작일 (YYYY-MM-01)
+    const startOfMonth = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+    const monthStr = startOfMonth.slice(0, 7); // "2026-02"
+    
+    // 2025년 동월 정보
+    const startOfMonth2025 = `2025-${String(month + 1).padStart(2, "0")}-01`;
+    const endOfPeriod2025 = `2025-${String(month + 1).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+    const lastDayOf2025 = new Date(2025, month + 1, 0).getDate();
+    const endOfMonth2025 = `2025-${String(month + 1).padStart(2, "0")}-${String(lastDayOf2025).padStart(2, "0")}`;
+
+    // 필터링 헬퍼
+    const matchesFilters = (row: CSVRecord) => {
+      if (selectedItem !== "전체" && row.item !== selectedItem) return false;
+      if (season !== "전체" && row.season !== season) return false;
+      return true;
+    };
+
+    let revenue2026_Current = 0; // 2026년 현재까지 매출 (startDate ~ endDate)
+    let revenue2025_SamePeriod = 0; // 2025년 동일 기간 매출 (2월 1일 ~ 2월 endDay일)
+    let revenue2025_TotalMonth = 0; // 2025년 해당 월 전체 매출
+
+    // csvData 전체 순회
+    csvData.forEach((row) => {
+      if (!matchesFilters(row)) return;
+
+      // 2026년 현재까지 매출 (startDate ~ endDate)
+      if (row.date >= startDate && row.date <= endDate) {
+        revenue2026_Current += row.revenue_2026;
+      }
+
+      // 2025년 데이터 계산
+      // csvLoader에서 2025 데이터는 2026 날짜로 매핑되어 있음
+      // 따라서 2026 날짜 기준으로 2025 매출을 합산
+      
+      // 2025년 동일 기간 (2월 1일 ~ 2월 endDay일)
+      // row.date가 2026-02-01 ~ 2026-02-endDay 범위에 있으면
+      if (row.date >= startOfMonth && row.date <= endOfPeriod2025.replace("2025", "2026")) {
+        revenue2025_SamePeriod += row.revenue_2025;
+      }
+
+      // 2025년 해당 월 전체 매출
+      // row.date가 해당 월에 속하는지 확인 (2026-02-XX 형태)
+      if (row.date.startsWith(monthStr)) {
+        revenue2025_TotalMonth += row.revenue_2025;
+      }
+    });
+
+    if (revenue2025_TotalMonth === 0) return null;
+
+    const progressRate = revenue2025_SamePeriod / revenue2025_TotalMonth;
+
+    // 진척률이 너무 낮으면(0%) 예측 불가
+    if (progressRate <= 0) return null;
+
+    const forecast = revenue2026_Current / progressRate;
+
+    return {
+      forecast: Math.round(forecast),
+      progressRate: Math.round(progressRate * 1000) / 10, // xx.x%
+      currentRevenue: revenue2026_Current
+    };
+  }, [csvData, startDate, endDate, selectedItem, season]);
+
   const itemsForTable = useMemo(
     () =>
       itemsData
@@ -462,6 +539,17 @@ export default function Dashboard() {
             )}
           </div>
           <div className="muted">{startDate} ~ {endDate}</div>
+        </div>
+        <div className="card">
+          <div className="muted">이번달 예상 매출</div>
+          <div className="kpi-value">
+            {monthForecast !== null ? formatCurrency(monthForecast.forecast) : "N/A"}
+          </div>
+          <div className="muted">
+            {monthForecast !== null 
+              ? `진척률: ${monthForecast.progressRate}% (전년 동기 패턴)` 
+              : "데이터 부족"}
+          </div>
         </div>
       </div>
 
