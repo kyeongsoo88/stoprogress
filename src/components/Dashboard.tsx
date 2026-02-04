@@ -134,7 +134,44 @@ export default function Dashboard() {
     });
     const maxValue = Math.max(0, ...values2026, ...values2025);
     const minValue = Math.min(0, ...values2026, ...values2025);
-    return { labels, values2026, values2025, yoy, maxValue, minValue };
+
+    // 2026년 예상 매출 시뮬레이션 (Forecast)
+    // 로직: 2025년 동기 대비 현재 매출 비율(진척률)을 구하고, 
+    // 이를 남은 기간의 2025년 매출에 곱하여 2026년 예상 매출을 산출
+    const forecastValues: Array<number | null> = labels.map(() => null);
+    
+    // 1. 2026 데이터가 존재하는 마지막 인덱스 찾기
+    let lastIndex2026 = -1;
+    for (let i = values2026.length - 1; i >= 0; i--) {
+      if (values2026[i] > 0) {
+        lastIndex2026 = i;
+        break;
+      }
+    }
+
+    if (lastIndex2026 !== -1 && lastIndex2026 < labels.length - 1) {
+      // 2. 현재까지의 누적 매출 비교 (진척률 계산)
+      let sum2026 = 0;
+      let sum2025 = 0;
+      for (let i = 0; i <= lastIndex2026; i++) {
+        sum2026 += values2026[i];
+        sum2025 += values2025[i];
+      }
+
+      // 진척률 (Multiplier)
+      const growthRatio = sum2025 > 0 ? sum2026 / sum2025 : 1.0;
+
+      // 3. 미래 데이터 예측
+      // 마지막 실데이터 지점부터 시작
+      forecastValues[lastIndex2026] = values2026[lastIndex2026];
+      
+      for (let i = lastIndex2026 + 1; i < labels.length; i++) {
+        const forecastedValue = values2025[i] * growthRatio;
+        forecastValues[i] = Math.round(forecastedValue);
+      }
+    }
+
+    return { labels, values2026, values2025, yoy, maxValue, minValue, forecastValues };
   }, [itemFilteredData, metric]);
 
   const dailyCumulativeSeries = useMemo(() => {
@@ -154,9 +191,56 @@ export default function Dashboard() {
       const v2025 = values2025[i];
       return v2025 > 0 ? Math.round((v2026 / v2025) * 1000) / 10 : null;
     });
-    const maxValue = Math.max(0, ...values2026, ...values2025);
+
+    // 누적 예상 매출 계산 (forecastCumValues)
+    // 1. 실제 데이터 구간은 실제 누적값 사용
+    // 2. 예상 구간부터는 '이전 누적값 + 해당일 예상 매출'로 누적
+    const forecastCumValues: Array<number | null> = labels.map(() => null);
+    
+    // dailySeries.forecastValues가 null이 아닌 첫 지점 찾기 (예상 시작점)
+    let forecastStartIndex = -1;
+    // dailySeries.forecastValues는 마지막 실데이터 지점부터 값이 있음
+    // 하지만 누적 그래프에서는 '마지막 실데이터 지점'까지는 실데이터 라인으로 그리고,
+    // 그 다음부터 예상 라인으로 그리는 게 자연스러움.
+    // 여기서는 forecastValues 전체를 순회하며 누적을 계산하되,
+    // 실데이터 구간은 실누적값과 동일하게 맞춤 (연결을 위해)
+
+    if (dailySeries.forecastValues) {
+        let currentCum = 0;
+        let hasStartedForecast = false;
+
+        for (let i = 0; i < labels.length; i++) {
+            // 아직 실데이터 구간인 경우 (values2026 누적값 사용)
+            // dailySeries.values2026[i]가 0이 아니거나, 
+            // 0이라도 아직 예상 구간이 시작되지 않았다면 실누적 사용?
+            // 더 정확히는: dailySeries.forecastValues[i]가 null이면 실데이터 구간
+            
+            if (dailySeries.forecastValues[i] === null) {
+                // 예상치 없음 -> 실데이터 구간
+                currentCum = values2026[i];
+                forecastCumValues[i] = null; 
+            } else {
+                // 예상치 있음 (마지막 실데이터 지점 포함)
+                if (!hasStartedForecast) {
+                    // 예상 시작 지점 (마지막 실데이터 지점)
+                    // 여기는 실누적값과 동일하게 설정하여 그래프를 이어줌
+                    currentCum = values2026[i];
+                    forecastCumValues[i] = currentCum;
+                    hasStartedForecast = true;
+                } else {
+                    // 순수 예상 구간
+                    // 이전 누적값 + 오늘의 예상 매출
+                    // dailySeries.forecastValues[i]는 해당 일의 예상 매출임
+                    currentCum += dailySeries.forecastValues[i]!;
+                    forecastCumValues[i] = Math.round(currentCum);
+                }
+            }
+        }
+    }
+
+    const maxValue = Math.max(0, ...values2026, ...values2025, ...(forecastCumValues.filter(v => v !== null) as number[]));
     const minValue = Math.min(0, ...values2026, ...values2025);
-    return { labels, values2026, values2025, yoy, maxValue, minValue };
+    return { labels, values2026, values2025, yoy, maxValue, minValue, forecastCumValues };
   }, [dailySeries]);
 
   const ytdYoyValues = useMemo(
@@ -585,6 +669,16 @@ export default function Dashboard() {
                   fill: "tozeroy",
                   fillcolor: "rgba(79, 70, 229, 0.08)",
               },
+              {
+                x: dailySeries.labels.map(d => d.slice(5)),
+                y: dailySeries.forecastValues,
+                type: "scatter",
+                mode: "lines",
+                name: "2026 예상",
+                line: { color: "#a855f7", width: 2.5, dash: "dot", shape: "spline", smoothing: 1.3 },
+                hoverinfo: "skip", // 툴팁 생략 (복잡도 감소) 또는 별도 표시
+                connectgaps: true, // 끊어진 부분 연결
+              },
               ...(show2025Line
                 ? [
                     {
@@ -662,6 +756,26 @@ export default function Dashboard() {
                     fill: "tozeroy",
                     fillcolor: "rgba(16, 185, 129, 0.08)",
                   },
+                  // YoY 예상 라인 추가 (필요 시)
+                  // 현재 로직상 YoY 예상은 growthRatio * 100%로 상수가 됨
+                  // 너무 밋밋할 수 있으나 시각적으로 "이 추세대로라면"을 보여줌
+                  {
+                    x: dailySeries.labels.map(d => d.slice(5)),
+                    y: dailySeries.forecastValues.map((v, i) => {
+                      if (v === null || dailySeries.values2025[i] === 0) return null;
+                      // forecastValues[i]는 values2025[i] * growthRatio 이므로
+                      // YoY = (values2025[i] * growthRatio) / values2025[i] * 100 = growthRatio * 100
+                      // 단, 마지막 실데이터 지점은 실제 YoY 값 사용
+                      // 여기서는 계산된 forecastValues를 역산해서 표시
+                      return Math.round((v / dailySeries.values2025[i]) * 1000) / 10;
+                    }),
+                    type: "scatter",
+                    mode: "lines",
+                    name: "예상 YoY",
+                    line: { color: "#a855f7", width: 2, dash: "dot" },
+                    hoverinfo: "skip",
+                    connectgaps: true,
+                  },
                   {
                     x: dailySeries.labels.map(d => d.slice(5)),
                     y: dailySeries.labels.map(() => baseline),
@@ -737,10 +851,20 @@ export default function Dashboard() {
                     line: { color: "#4f46e5", width: 3.5, shape: "spline", smoothing: 1.3 },
                     marker: { size: 6, color: "#4f46e5", line: { width: 1.5, color: "#ffffff" } },
                     hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
-                    fill: "tozeroy",
-                    fillcolor: "rgba(79, 70, 229, 0.08)",
-                  },
-                  ...(show2025Line
+                  fill: "tozeroy",
+                  fillcolor: "rgba(79, 70, 229, 0.08)",
+              },
+              {
+                x: dailyCumulativeSeries.labels.map(d => d.slice(5)),
+                y: dailyCumulativeSeries.forecastCumValues,
+                type: "scatter",
+                mode: "lines",
+                name: "2026 누적 예상",
+                line: { color: "#a855f7", width: 2.5, dash: "dot", shape: "spline", smoothing: 1.3 },
+                hoverinfo: "skip",
+                connectgaps: true,
+              },
+              ...(show2025Line
                     ? [
                         {
                           x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
@@ -815,6 +939,22 @@ export default function Dashboard() {
                       hovertemplate: "<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
                       fill: "tozeroy",
                       fillcolor: "rgba(16, 185, 129, 0.08)",
+                    },
+                    // YTD YoY 예상 라인 추가
+                    {
+                      x: dailyCumulativeSeries.labels.map(d => d.slice(5)),
+                      y: dailyCumulativeSeries.forecastCumValues.map((v, i) => {
+                        if (v === null || dailyCumulativeSeries.values2025[i] === 0) return null;
+                        // forecastCumValues는 예상 누적 매출
+                        // 이를 해당 시점의 2025 누적 매출로 나누어 YoY 계산
+                        return Math.round((v / dailyCumulativeSeries.values2025[i]) * 1000) / 10;
+                      }),
+                      type: "scatter",
+                      mode: "lines",
+                      name: "예상 YoY",
+                      line: { color: "#a855f7", width: 2, dash: "dot" },
+                      hoverinfo: "skip",
+                      connectgaps: true,
                     },
                     {
                       x: dailyCumulativeSeries.labels.map((d) => d.slice(5)),
