@@ -135,12 +135,8 @@ export default function Dashboard() {
     const maxValue = Math.max(0, ...values2026, ...values2025);
     const minValue = Math.min(0, ...values2026, ...values2025);
 
-    // 2026년 예상 매출 시뮬레이션 (Forecast)
-    // 로직: 2025년 동기 대비 현재 매출 비율(진척률)을 구하고, 
-    // 이를 남은 기간의 2025년 매출에 곱하여 2026년 예상 매출을 산출
     const forecastValues: Array<number | null> = labels.map(() => null);
     
-    // 1. 2026 데이터가 존재하는 마지막 인덱스 찾기
     let lastIndex2026 = -1;
     for (let i = values2026.length - 1; i >= 0; i--) {
       if (values2026[i] > 0) {
@@ -150,7 +146,6 @@ export default function Dashboard() {
     }
 
     if (lastIndex2026 !== -1 && lastIndex2026 < labels.length - 1) {
-      // 2. 현재까지의 누적 매출 비교 (진척률 계산)
       let sum2026 = 0;
       let sum2025 = 0;
       for (let i = 0; i <= lastIndex2026; i++) {
@@ -158,11 +153,8 @@ export default function Dashboard() {
         sum2025 += values2025[i];
       }
 
-      // 진척률 (Multiplier)
       const growthRatio = sum2025 > 0 ? sum2026 / sum2025 : 1.0;
 
-      // 3. 미래 데이터 예측
-      // 마지막 실데이터 지점부터 시작
       forecastValues[lastIndex2026] = values2026[lastIndex2026];
       
       for (let i = lastIndex2026 + 1; i < labels.length; i++) {
@@ -192,45 +184,24 @@ export default function Dashboard() {
       return v2025 > 0 ? Math.round((v2026 / v2025) * 1000) / 10 : null;
     });
 
-    // 누적 예상 매출 계산 (forecastCumValues)
-    // 1. 실제 데이터 구간은 실제 누적값 사용
-    // 2. 예상 구간부터는 '이전 누적값 + 해당일 예상 매출'로 누적
     const forecastCumValues: Array<number | null> = labels.map(() => null);
     
-    // dailySeries.forecastValues가 null이 아닌 첫 지점 찾기 (예상 시작점)
     let forecastStartIndex = -1;
-    // dailySeries.forecastValues는 마지막 실데이터 지점부터 값이 있음
-    // 하지만 누적 그래프에서는 '마지막 실데이터 지점'까지는 실데이터 라인으로 그리고,
-    // 그 다음부터 예상 라인으로 그리는 게 자연스러움.
-    // 여기서는 forecastValues 전체를 순회하며 누적을 계산하되,
-    // 실데이터 구간은 실누적값과 동일하게 맞춤 (연결을 위해)
 
     if (dailySeries.forecastValues) {
         let currentCum = 0;
         let hasStartedForecast = false;
 
         for (let i = 0; i < labels.length; i++) {
-            // 아직 실데이터 구간인 경우 (values2026 누적값 사용)
-            // dailySeries.values2026[i]가 0이 아니거나, 
-            // 0이라도 아직 예상 구간이 시작되지 않았다면 실누적 사용?
-            // 더 정확히는: dailySeries.forecastValues[i]가 null이면 실데이터 구간
-            
             if (dailySeries.forecastValues[i] === null) {
-                // 예상치 없음 -> 실데이터 구간
                 currentCum = values2026[i];
                 forecastCumValues[i] = null; 
             } else {
-                // 예상치 있음 (마지막 실데이터 지점 포함)
                 if (!hasStartedForecast) {
-                    // 예상 시작 지점 (마지막 실데이터 지점)
-                    // 여기는 실누적값과 동일하게 설정하여 그래프를 이어줌
                     currentCum = values2026[i];
                     forecastCumValues[i] = currentCum;
                     hasStartedForecast = true;
                 } else {
-                    // 순수 예상 구간
-                    // 이전 누적값 + 오늘의 예상 매출
-                    // dailySeries.forecastValues[i]는 해당 일의 예상 매출임
                     currentCum += dailySeries.forecastValues[i]!;
                     forecastCumValues[i] = Math.round(currentCum);
                 }
@@ -257,12 +228,263 @@ export default function Dashboard() {
   }, [ytdYoyValues, baseline]);
   const ytdYoyPadding = useMemo(() => Math.max(6, (ytdYoyMax - ytdYoyMin) * 0.2), [ytdYoyMax, ytdYoyMin]);
 
+  // 트리맵용 데이터: Season 필터와 상관없이 날짜로만 필터링된 전체 데이터 필요
+  const dateFilteredData = useMemo(() => {
+    if (!csvData) return [];
+    return filterData(csvData, { start: startDate, end: endDate, season: "전체" });
+  }, [csvData, startDate, endDate]);
+
+  // 2026년 실적 데이터가 있는 마지막 날짜 찾기 (전체 데이터 기준)
+  const globalLastValidDate = useMemo(() => {
+    if (!dateFilteredData.length) return null;
+    let lastDate = "";
+    dateFilteredData.forEach((row) => {
+      if (row.revenue_2026 !== 0) {
+        if (row.date > lastDate) {
+          lastDate = row.date;
+        }
+      }
+    });
+    return lastDate;
+  }, [dateFilteredData]);
+
+  // 트리맵용 데이터: 실적 데이터가 있는 날짜까지만 포함 (Period Align)
+  const treemapSourceData = useMemo(() => {
+    if (!dateFilteredData.length) return [];
+    if (!globalLastValidDate) return dateFilteredData; // 데이터 없으면 전체 사용
+    
+    return dateFilteredData.filter(row => row.date <= globalLastValidDate);
+  }, [dateFilteredData, globalLastValidDate]);
+
+  // 계층형 트리맵 데이터 집계 (Season -> Item)
+  const hierarchicalTreemapData = useMemo(() => {
+    if (!treemapSourceData.length) return null;
+
+    // 1. 데이터 집계
+    const seasonStats = new Map<
+      string,
+      {
+        revenue2026: number; // 실제 매출 (텍스트 표시용)
+        revenue2025: number;
+        msrp2026: number;
+        msrp2025: number;
+        items: Map<string, number>; // Item별 Revenue (양수만)
+        visualRevenue: number; // 시각화용 매출 (양수 아이템 합계)
+      }
+    >();
+
+    treemapSourceData.forEach((row) => {
+      const seasonKey = row.season || "Unknown";
+      const itemKey = row.item || "Unknown";
+
+      const seasonData = seasonStats.get(seasonKey) ?? {
+        revenue2026: 0,
+        revenue2025: 0,
+        msrp2026: 0,
+        msrp2025: 0,
+        items: new Map<string, number>(),
+        visualRevenue: 0,
+      };
+
+      // 텍스트 표시용 실제 매출 합산 (반품 포함)
+      seasonData.revenue2026 += row.revenue_2026;
+      seasonData.revenue2025 += row.revenue_2025;
+      seasonData.msrp2026 += row.msrp_2026;
+      seasonData.msrp2025 += row.msrp_2025;
+
+      // Item별 매출 집계 (양수만 필터링하기 위해 일단 다 더함)
+      const currentItemRevenue = seasonData.items.get(itemKey) ?? 0;
+      seasonData.items.set(itemKey, currentItemRevenue + row.revenue_2026);
+
+      seasonStats.set(seasonKey, seasonData);
+    });
+
+    // 2. 시각화용 데이터 정제 (음수 매출 제거 및 부모 값 재계산)
+    seasonStats.forEach((data, seasonKey) => {
+        let visualTotal = 0;
+        data.items.forEach((rev, key) => {
+            if (rev > 0) {
+                visualTotal += rev;
+            }
+        });
+        data.visualRevenue = visualTotal;
+    });
+
+    // 3. Plotly 트리맵 데이터 구조 생성 (All 노드 제거)
+    const ids: string[] = [];
+    const labels: string[] = [];
+    const parents: string[] = [];
+    const values: number[] = [];
+    const texts: string[] = [];
+    const colors: string[] = [];
+
+    // 정렬 (시각화용 매출액 내림차순)
+    const sortedSeasons = Array.from(seasonStats.entries()).sort(
+      (a, b) => b[1].visualRevenue - a[1].visualRevenue
+    );
+
+    // 파스텔톤 컬러풀 팔레트
+    const palette = [
+      "#93c5fd", // blue-300
+      "#86efac", // green-300
+      "#fca5a5", // red-300
+      "#fcd34d", // amber-300
+      "#c4b5fd", // violet-300
+      "#fda4af", // rose-300
+      "#67e8f9", // cyan-300
+      "#fdba74", // orange-300
+    ];
+
+    sortedSeasons.forEach(([season, data], index) => {
+      if (data.visualRevenue <= 0) return;
+
+      // 2.1 Season 노드 (Parent)
+      const seasonColor = palette[index % palette.length];
+      // 비중 계산: 전체 시각화 매출 대비 해당 시즌 시각화 매출
+      // Total visual revenue calculation for share
+      const totalVisual = sortedSeasons.reduce((sum, [_, d]) => sum + d.visualRevenue, 0);
+      const share = (data.visualRevenue / totalVisual) * 100;
+      
+      const discountRate2026 =
+        data.msrp2026 > 0 ? (1 - data.revenue2026 / data.msrp2026) * 100 : 0;
+      const discountRate2025 =
+        data.msrp2025 > 0 ? (1 - data.revenue2025 / data.msrp2025) * 100 : 0;
+      const yoy =
+        data.revenue2025 > 0 ? (data.revenue2026 / data.revenue2025) * 100 : null;
+
+      ids.push(season);
+      labels.push(season);
+      parents.push(""); // 최상위 (부모 없음)
+      values.push(data.visualRevenue); // 시각화용 값 사용
+      colors.push(seasonColor);
+
+      // Season 텍스트
+      const formattedRevenue = formatCurrency(data.revenue2026).replace("$", "$");
+      let text = `${formattedRevenue} (${share.toFixed(1)}%)<br>`;
+      text += `할인율: ${discountRate2026.toFixed(1)}%<br>`;
+      text += `전년할인율: ${discountRate2025.toFixed(1)}%<br>`;
+      text += `YOY: ${yoy !== null ? Math.round(yoy) + "%" : "N/A"}`;
+      texts.push(text);
+
+      // 2.2 Item 노드 (Children)
+      const sortedItems = Array.from(data.items.entries())
+        .filter(([_, rev]) => rev > 0) // 양수만 필터링
+        .sort((a, b) => b[1] - a[1]);
+
+      sortedItems.forEach(([item, itemRevenue]) => {
+        const itemId = `${season}-${item}`; // 고유 ID
+        const itemShare = (itemRevenue / data.visualRevenue) * 100; // 시즌 내 비중
+
+        ids.push(itemId);
+        labels.push(item);
+        parents.push(season); // 부모는 해당 Season
+        values.push(itemRevenue);
+        colors.push(seasonColor); // 부모 색상 상속
+
+        // Item 텍스트
+        const itemFormattedRevenue = formatCurrency(itemRevenue).replace("$", "$");
+        let itemText = `${itemFormattedRevenue} (${itemShare.toFixed(1)}%)`;
+        texts.push(itemText);
+      });
+    });
+
+    return { ids, labels, parents, values, texts, colors };
+  }, [treemapSourceData]);
+
+  // Item별 트리맵 데이터 집계
+  const itemTreemapData = useMemo(() => {
+    if (!treemapSourceData.length) return null;
+
+    const buckets = new Map<
+      string,
+      {
+        revenue2026: number;
+        revenue2025: number;
+        msrp2026: number;
+        msrp2025: number;
+        count: number;
+      }
+    >();
+
+    let totalRevenue2026 = 0;
+
+    treemapSourceData.forEach((row) => {
+      const itemKey = row.item || "Unknown";
+      const existing = buckets.get(itemKey) ?? {
+        revenue2026: 0,
+        revenue2025: 0,
+        msrp2026: 0,
+        msrp2025: 0,
+        count: 0,
+      };
+
+      existing.revenue2026 += row.revenue_2026;
+      existing.revenue2025 += row.revenue_2025;
+      existing.msrp2026 += row.msrp_2026;
+      existing.msrp2025 += row.msrp_2025;
+      existing.count += 1;
+
+      buckets.set(itemKey, existing);
+      totalRevenue2026 += row.revenue_2026;
+    });
+
+    const labels: string[] = [];
+    const parents: string[] = [];
+    const values: number[] = [];
+    const texts: string[] = [];
+    const colors: string[] = [];
+
+    const sortedItems = Array.from(buckets.entries()).sort(
+      (a, b) => b[1].revenue2026 - a[1].revenue2026
+    );
+
+    // 파스텔톤 컬러풀 팔레트
+    const palette = [
+      "#93c5fd", // blue-300
+      "#86efac", // green-300
+      "#fca5a5", // red-300
+      "#fcd34d", // amber-300
+      "#c4b5fd", // violet-300
+      "#fda4af", // rose-300
+      "#67e8f9", // cyan-300
+      "#fdba74", // orange-300
+    ];
+
+    sortedItems.forEach(([item, data], index) => {
+      if (data.revenue2026 <= 0) return;
+
+      const share = (data.revenue2026 / totalRevenue2026) * 100;
+      const discountRate2026 =
+        data.msrp2026 > 0 ? (1 - data.revenue2026 / data.msrp2026) * 100 : 0;
+      const discountRate2025 =
+        data.msrp2025 > 0 ? (1 - data.revenue2025 / data.msrp2025) * 100 : 0;
+      const yoy =
+        data.revenue2025 > 0 ? (data.revenue2026 / data.revenue2025) * 100 : null;
+
+      labels.push(item);
+      parents.push("");
+      values.push(data.revenue2026);
+
+      const formattedRevenue = formatCurrency(data.revenue2026).replace("$", "$");
+      
+      let text = `<b>${item}</b><br>`;
+      text += `${formattedRevenue} (${share.toFixed(1)}%)<br>`;
+      text += `할인율: ${discountRate2026.toFixed(1)}%<br>`;
+      text += `전년할인율: ${discountRate2025.toFixed(1)}%<br>`;
+      text += `YOY: ${yoy !== null ? Math.round(yoy) + "%" : "N/A"}`;
+
+      texts.push(text);
+      colors.push(palette[index % palette.length]);
+    });
+
+    return { labels, parents, values, texts, colors };
+  }, [treemapSourceData]);
+
 
   const totalRevenue2026 = progressData.total_2026;
   const targetRevenue = progressData.season_target_revenue;
   const seasonProgress = progressData.season_progress;
 
-  // 기간매출: 설정한 기간의 2026년 매출 합계 (Item, 기간, Season AND 조건)
   const periodRevenue = useMemo(() => {
     if (!itemFilteredData.length) return 0;
     let sum = 0;
@@ -272,64 +494,51 @@ export default function Dashboard() {
     return sum;
   }, [itemFilteredData]);
 
-  // 기간 YoY: 설정한 기간의 2026년 매출 대비 2025년 매출 YoY %
-  // dailySeries와 동일한 로직 사용 (날짜별 버킷, 2025는 중복 제거)
-  // Item, 기간, Season을 AND 조건으로 적용
   const periodYoY = useMemo(() => {
     if (!itemFilteredData.length) return null;
+    let lastValidDate = "";
+    itemFilteredData.forEach((row) => {
+      if (row.revenue_2026 !== 0) {
+        if (row.date > lastValidDate) {
+          lastValidDate = row.date;
+        }
+      }
+    });
+
+    if (!lastValidDate) return null;
+
     const buckets = new Map<string, { value2026: number; value2025: number }>();
     const counted2025 = new Set<string>();
-    
+
     itemFilteredData.forEach((row) => {
+      if (row.date > lastValidDate) return;
+
       const label = row.date;
       const existing = buckets.get(label) ?? { value2026: 0, value2025: 0 };
-      
-      // 2026은 모두 합산
+
       existing.value2026 += row.revenue_2026;
-      
-      // 2025는 중복 제거 (같은 날짜-시즌-아이템 조합은 한 번만)
-      // season_2025를 우선 사용 (csvLoader에서 항상 설정됨)
+
       const seasonKey = row.season_2025 || row.season;
       const key2025 = `${label}|${seasonKey}|${row.item}`;
       if (!counted2025.has(key2025)) {
         existing.value2025 += row.revenue_2025;
         counted2025.add(key2025);
       }
-      
+
       buckets.set(label, existing);
     });
-    
-    // 전체 합계 계산
+
     let sum2026 = 0;
     let sum2025 = 0;
     buckets.forEach((values) => {
       sum2026 += values.value2026;
       sum2025 += values.value2025;
     });
-    
-    // 디버깅: 콘솔에 출력
-    if (startDate === "2026-01-01" && endDate === "2026-01-30") {
-      console.log("기간 YoY 계산:", {
-        startDate,
-        endDate,
-        selectedItem,
-        season,
-        sum2026,
-        sum2025,
-        yoy: sum2025 > 0 ? ((sum2026 / sum2025) * 100) : null,
-        filteredDataCount: itemFilteredData.length,
-        bucketCount: buckets.size,
-        counted2025Size: counted2025.size,
-      });
-    }
-    
+
     if (sum2025 === 0) return null;
     return Math.round(((sum2026 / sum2025) * 100) * 10) / 10;
   }, [itemFilteredData, startDate, endDate, selectedItem, season]);
 
-  // 기간 할인율: 1 - (Revenue 합 / MSRP 합) * 100
-  // Item, 기간, Season을 AND 조건으로 적용
-  // 전년대비: 2026 할인율 - 2025 할인율
   const periodDiscountRate = useMemo(() => {
     if (!itemFilteredData.length) return null;
     let sumRevenue2026 = 0;
@@ -363,25 +572,17 @@ export default function Dashboard() {
     };
   }, [itemFilteredData]);
 
-  // 이번달 예상 매출 (전년 동기 진척률 기반)
-  // startDate를 기준으로 해당 월을 판단하여 예측
   const monthForecast = useMemo(() => {
     if (!csvData) return null;
 
-    // 1. 데이터가 있는 마지막 날짜 확인 (2026년 데이터 중 가장 늦은 날짜)
-    // 단, 이번달(2월) 데이터 내에서 확인해야 함
     const startObj = new Date(startDate);
     const year = startObj.getFullYear();
     const month = startObj.getMonth();
-    const monthStr = `${year}-${String(month + 1).padStart(2, "0")}`; // "2026-02"
+    const monthStr = `${year}-${String(month + 1).padStart(2, "0")}`; 
     
-    // 이번달에 해당하는 데이터만 필터링해서 마지막 날짜 찾기
     let lastDateInMonth = "";
     csvData.forEach(row => {
       if (row.date.startsWith(monthStr)) {
-        // 주의: csvLoader는 2025년 데이터도 2026년 날짜로 매핑해서 가지고 있음 (이 경우 revenue_2026은 0)
-        // 따라서 단순히 날짜만 보면 2025년 데이터 때문에 월말까지 있는 것으로 착각하게 됨
-        // revenue_2026이 실제로 존재하는(0이 아닌) 날짜 중 가장 늦은 날짜를 찾아야 함
         if (row.revenue_2026 !== 0) {
           if (row.date > lastDateInMonth) {
             lastDateInMonth = row.date;
@@ -390,48 +591,31 @@ export default function Dashboard() {
       }
     });
 
-    // 만약 이번달 매출이 전무하다면(월초라 아직 0원이거나 데이터가 없거나)
-    // 데이터가 있는 날짜를 못 찾을 수 있음.
-    // 이 경우 예측을 할 수 없으므로 null 리턴
     if (!lastDateInMonth) {
         return null;
     }
 
-    // 비교 기준일: 데이터가 존재하는 마지막 날짜 (예: 2026-02-01)
     const targetDateStr = lastDateInMonth;
     const startOfMonth = `${monthStr}-01`;
 
-    // 2025년 비교 기간: 2월 1일 ~ targetDateStr의 2025년 대응 날짜
-    // 주의: csvLoader에서 2025 데이터는 2026 날짜로 매핑되어 있음.
-    // 따라서 2026 날짜 기준으로 그대로 비교하면 됨.
-    
-    // 필터링 헬퍼
     const matchesFilters = (row: CSVRecord) => {
       if (selectedItem !== "전체" && row.item !== selectedItem) return false;
       if (season !== "전체" && row.season !== season) return false;
       return true;
     };
 
-    let revenue2026_Current = 0; // 2026년 현재까지 매출 (1일 ~ 마지막 데이터 날짜)
-    let revenue2025_SamePeriod = 0; // 2025년 동일 기간 매출 (1일 ~ 마지막 데이터 날짜)
-    let revenue2025_TotalMonth = 0; // 2025년 해당 월 전체 매출
+    let revenue2026_Current = 0;
+    let revenue2025_SamePeriod = 0;
+    let revenue2025_TotalMonth = 0;
 
-    // csvData 전체 순회
     csvData.forEach((row) => {
       if (!matchesFilters(row)) return;
 
-      // 2026년 현재까지 매출 (이번달 1일 ~ 데이터 마지막 날짜)
       if (row.date >= startOfMonth && row.date <= targetDateStr) {
         revenue2026_Current += row.revenue_2026;
-        
-        // 2025년 동일 기간 (2월 1일 ~ 데이터 마지막 날짜)
-        // csvLoader가 2025 데이터를 2026 날짜로 매핑해두었으므로, 날짜 조건 동일하게 적용
         revenue2025_SamePeriod += row.revenue_2025;
       }
 
-      // 2025년 해당 월 전체 매출
-      // row.date가 해당 월에 속하는지 확인 (2026-02-XX 형태)
-      // csvLoader가 2025년 2월 28일 데이터 등을 2026년 2월로 매핑해서 가져옴
       if (row.date.startsWith(monthStr)) {
         revenue2025_TotalMonth += row.revenue_2025;
       }
@@ -441,14 +625,13 @@ export default function Dashboard() {
 
     const progressRate = revenue2025_SamePeriod / revenue2025_TotalMonth;
 
-    // 진척률이 너무 낮으면(0%) 예측 불가
     if (progressRate <= 0) return null;
 
     const forecast = revenue2026_Current / progressRate;
 
     return {
       forecast: Math.round(forecast),
-      progressRate: Math.round(progressRate * 1000) / 10, // xx.x%
+      progressRate: Math.round(progressRate * 1000) / 10, 
       currentRevenue: revenue2026_Current
     };
   }, [csvData, startDate, selectedItem, season]);
@@ -651,190 +834,87 @@ export default function Dashboard() {
       </div>
 
       <div className="chart-stack">
-        <div style={{ display: "grid", gridTemplateColumns: showYoY ? "1fr 1fr" : "1fr", gap: "16px" }}>
-        <div className="card" style={{ width: "100%" }}>
-            <h3>일별 매출 비교</h3>
-          <div style={{ width: "100%", overflow: "hidden" }}>
-            <Plot
-            data={[
-              {
-                  x: dailySeries.labels.map(d => d.slice(5)),
-                  y: dailySeries.values2026,
-                type: "scatter",
-                mode: "lines+markers",
-                  name: "2026 일별",
-                  line: { color: "#4f46e5", width: 3.5, shape: "spline", smoothing: 1.3 },
-                  marker: { size: 6, color: "#4f46e5", line: { width: 1.5, color: "#ffffff" } },
-                  hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
-                  fill: "tozeroy",
-                  fillcolor: "rgba(79, 70, 229, 0.08)",
-              },
-              {
-                x: dailySeries.labels.map(d => d.slice(5)),
-                y: dailySeries.forecastValues,
-                type: "scatter",
-                mode: "lines",
-                name: "2026 예상",
-                line: { color: "#a855f7", width: 2.5, dash: "dot", shape: "spline", smoothing: 1.3 },
-                hoverinfo: "skip", // 툴팁 생략 (복잡도 감소) 또는 별도 표시
-                connectgaps: true, // 끊어진 부분 연결
-              },
-              ...(show2025Line
-                ? [
+        {hierarchicalTreemapData && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            <div className="card">
+              <h3>Season별 매출 구성</h3>
+              <div style={{ width: "100%", height: "400px" }}>
+                <Plot
+                  data={[
                     {
-                        x: dailySeries.labels.map(d => d.slice(5)),
-                        y: dailySeries.values2025,
-                      type: "scatter",
-                      mode: "lines+markers",
-                      name: "2025 동일기간",
-                        line: { color: "#f59e0b", width: 3, shape: "spline", smoothing: 1.3 },
-                        marker: { size: 5, color: "#f59e0b", line: { width: 1.5, color: "#ffffff" } },
-                        hovertemplate: "<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+                      type: "treemap",
+                      ids: hierarchicalTreemapData.ids, // 추가된 ID
+                      labels: hierarchicalTreemapData.labels,
+                      parents: hierarchicalTreemapData.parents,
+                      values: hierarchicalTreemapData.values,
+                      text: hierarchicalTreemapData.texts,
+                      textinfo: "label+text", // 이름 + 커스텀 텍스트(액수 등) 표시
+                      hoverinfo: "label+text+percent parent", // 호버 시 value(시각화용 값) 대신 text(실제 값) 표시
+                      branchvalues: "total", // 부모 값 = 자식 값 합계 (중요)
+                      marker: {
+                          colors: hierarchicalTreemapData.colors,
+                          showscale: false
+                      },
+                      textposition: "middle center",
+                      textfont: {
+                          size: 14,
+                          color: "#1e293b"
+                      },
+                      // @ts-ignore
+                      tiling: { packing: "squarify" }, // 레이아웃 최적화
+                      maxdepth: 1, // 1단계(Season)만 표시, 클릭 시 하위 단계(Item) 표시
                     },
-                  ]
-                : []),
-              ]}
-              layout={{
-                height: 350,
-                margin: { l: 70, r: 80, t: 30, b: 50 },
-                legend: { 
-                  orientation: "h", 
-                  y: -0.18,
-                  x: 0.5,
-                  xanchor: "center",
-                  font: { size: 13, family: "Pretendard" },
-                  bgcolor: "rgba(255,255,255,0.8)",
-                  bordercolor: "rgba(226,232,240,0.5)",
-                  borderwidth: 1,
-                },
-                paper_bgcolor: "rgba(0,0,0,0)",
-                plot_bgcolor: "#fafbfc",
-                autosize: true,
-                font: { family: "Pretendard", size: 12, color: "#334155" },
-                yaxis: {
-                  title: { 
-                    text: metric === "revenue" ? "일별 매출 (USD)" : "일별 이익 (USD)",
-                    font: { size: 13, color: "#475569", family: "Pretendard" }
-                  },
-                  tickprefix: "$",
-                  tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
-                  gridcolor: "#e2e8f0",
-                  gridwidth: 1,
-                  zeroline: false,
-                  side: "left",
-                  range: [dailySeries.minValue * 1.1, Math.max(1, dailySeries.maxValue * 1.1)],
-                },
-                xaxis: { 
-                  gridcolor: "#f1f5f9", 
-                  gridwidth: 1,
-                  type: "category",
-                  tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
-                  title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
-                },
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: "100%", height: "100%" }}
-            />
+                  ]}
+                  layout={{
+                    margin: { l: 10, r: 10, t: 10, b: 10 },
+                    paper_bgcolor: "rgba(0,0,0,0)",
+                    plot_bgcolor: "rgba(0,0,0,0)",
+                    autosize: true,
+                  }}
+                  config={{ displayModeBar: false, responsive: true }}
+                  style={{ width: "100%", height: "100%" }}
+                />
+              </div>
             </div>
-          </div>
-
-        {showYoY && (
-          <div className="card" style={{ width: "100%" }}>
-            <h3>일별 YoY</h3>
-            <div style={{ width: "100%", overflow: "hidden" }}>
-              <Plot
-                data={[
-                  {
-                    x: dailySeries.labels.map(d => d.slice(5)),
-                    y: dailySeries.yoy,
-                    type: "scatter",
-                    mode: "lines+markers",
-                    name: "YoY",
-                    line: { color: "#10b981", width: 3.5, shape: "spline", smoothing: 1.3 },
-                    marker: { size: 6, color: "#10b981", line: { width: 1.5, color: "#ffffff" } },
-                    hovertemplate: "<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
-                    fill: "tozeroy",
-                    fillcolor: "rgba(16, 185, 129, 0.08)",
-                  },
-                  // YoY 예상 라인 추가 (필요 시)
-                  // 현재 로직상 YoY 예상은 growthRatio * 100%로 상수가 됨
-                  // 너무 밋밋할 수 있으나 시각적으로 "이 추세대로라면"을 보여줌
-                  {
-                    x: dailySeries.labels.map(d => d.slice(5)),
-                    y: dailySeries.forecastValues.map((v, i) => {
-                      if (v === null || dailySeries.values2025[i] === 0) return null;
-                      // forecastValues[i]는 values2025[i] * growthRatio 이므로
-                      // YoY = (values2025[i] * growthRatio) / values2025[i] * 100 = growthRatio * 100
-                      // 단, 마지막 실데이터 지점은 실제 YoY 값 사용
-                      // 여기서는 계산된 forecastValues를 역산해서 표시
-                      return Math.round((v / dailySeries.values2025[i]) * 1000) / 10;
-                    }),
-                    type: "scatter",
-                    mode: "lines",
-                    name: "예상 YoY",
-                    line: { color: "#a855f7", width: 2, dash: "dot" },
-                    hoverinfo: "skip",
-                    connectgaps: true,
-                  },
-                  {
-                    x: dailySeries.labels.map(d => d.slice(5)),
-                    y: dailySeries.labels.map(() => baseline),
-                    type: "scatter",
-                    mode: "lines",
-                    name: "100% 기준선",
-                    line: { color: "#94a3b8", width: 2.5, dash: "dash" },
-                    hoverinfo: "skip",
-                  },
-                ]}
-                layout={{
-                  height: 350,
-                  margin: { l: 70, r: 40, t: 30, b: 50 },
-                  legend: { 
-                    orientation: "h", 
-                    y: -0.2,
-                    x: 0.5,
-                    xanchor: "center",
-                    font: { size: 13, family: "Pretendard" },
-                    bgcolor: "rgba(255,255,255,0.8)",
-                    bordercolor: "rgba(226,232,240,0.5)",
-                    borderwidth: 1,
-                  },
-                  paper_bgcolor: "rgba(0,0,0,0)",
-                  plot_bgcolor: "#fafbfc",
-                  autosize: true,
-                  font: { family: "Pretendard", size: 12, color: "#334155" },
-                  yaxis: {
-                    title: { 
-                      text: "YoY (%)",
-                      font: { size: 13, color: "#475569", family: "Pretendard" }
-                    },
-                    ticksuffix: "%",
-                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
-                    range: [yoyMin - yoyPadding, yoyMax + yoyPadding],
-                    gridcolor: "#e2e8f0",
-                    gridwidth: 1,
-                    zeroline: true,
-                    zerolinecolor: "#94a3b8",
-                    zerolinewidth: 2.5,
-                  },
-                  xaxis: { 
-                    title: { text: "날짜", font: { size: 13, color: "#475569", family: "Pretendard" } },
-                    gridcolor: "#f1f5f9",
-                    gridwidth: 1,
-                    type: "category",
-                    tickfont: { size: 11, color: "#64748b", family: "Pretendard" },
-                  },
-                }}
-                config={{ displayModeBar: false, responsive: true }}
-                style={{ width: "100%", height: "100%" }}
-              />
-            </div>
-            <p className="muted" style={{ marginTop: 8 }}>
-              100% = 전년 동일, 100% 초과 = 성장, 100% 미만 = 감소
-            </p>
+            {itemTreemapData && (
+              <div className="card">
+                <h3>Item별 매출 구성</h3>
+                <div style={{ width: "100%", height: "400px" }}>
+                  <Plot
+                    data={[
+                      {
+                        type: "treemap",
+                        labels: itemTreemapData.labels,
+                        parents: itemTreemapData.parents,
+                        values: itemTreemapData.values,
+                        text: itemTreemapData.texts,
+                        textinfo: "text",
+                        hoverinfo: "label+value+percent parent",
+                        marker: {
+                            colors: itemTreemapData.colors,
+                            showscale: false
+                        },
+                        textposition: "middle center",
+                        textfont: {
+                            size: 14,
+                            color: "#1e293b"
+                        }
+                      },
+                    ]}
+                    layout={{
+                      margin: { l: 10, r: 10, t: 10, b: 10 },
+                      paper_bgcolor: "rgba(0,0,0,0)",
+                      plot_bgcolor: "rgba(0,0,0,0)",
+                      autosize: true,
+                    }}
+                    config={{ displayModeBar: false, responsive: true }}
+                    style={{ width: "100%", height: "100%" }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
-        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: showYoY ? "1fr 1fr" : "1fr", gap: "16px", marginTop: "16px" }}>
           <div className="card" style={{ width: "100%" }}>
@@ -1016,68 +1096,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-          <div className="card">
-            <h3>{selectedItem === "전체" ? "전체 일별 성장률 (YoY)" : `${selectedItem} 일별 성장률 (YoY)`}</h3>
-            <div className="muted" style={{ marginBottom: "10px" }}>
-              100% 기준선: 전년과 동일 실적 (위쪽: 성장, 아래쪽: 역성장)
-            </div>
-            <Plot
-              data={[
-                {
-                  x: itemYoySeries.map((point) => point.x),
-                  y: itemYoySeries.map((point) => point.y),
-                  type: "scatter",
-                  mode: "lines+markers",
-                  name: "YoY %",
-                  line: { color: "#f97316", width: 3 },
-                  marker: { 
-                    size: 8,
-                    color: itemYoySeries.map((point) => (point.y !== null && point.y >= 100) ? "#10b981" : "#ef4444"),
-                    line: { width: 1, color: "#fff" }
-                  },
-                  hovertemplate: "<b>%{x}</b><br>YoY: %{y:.1f}%<extra></extra>",
-                },
-                {
-                  x: itemYoySeries.map((point) => point.x),
-                  y: itemYoySeries.map(() => baseline),
-                  type: "scatter",
-                  mode: "lines",
-                  name: "기준(100%)",
-                  line: { color: "#64748b", width: 2, dash: "dash" },
-                  hoverinfo: "skip",
-                },
-              ]}
-              layout={{
-                height: 280,
-                margin: { l: 60, r: 20, t: 30, b: 60 },
-                yaxis: {
-                  title: { text: "성장률 (YoY)", font: { size: 12 } },
-                  range: [0, selectedYoyMax * 1.1],
-                  fixedrange: false, // 사용자가 줌 가능하도록
-                  ticksuffix: "%",
-                  tickformat: ".0f",
-                  gridcolor: "#e5e7eb",
-                  zeroline: true,
-                  zerolinecolor: "#94a3b8",
-                },
-                paper_bgcolor: "rgba(0,0,0,0)",
-                plot_bgcolor: "#ffffff",
-                showlegend: false, // 범례 숨김 (심플하게)
-                xaxis: {
-                  title: "날짜",
-                  gridcolor: "#f1f5f9",
-                  tickangle: -45,
-                  automargin: true,
-                  tickformat: "%m-%d", // 02-01 형식으로 포맷팅
-                },
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: "100%" }}
-            />
-          </div>
-
-          <div className="card">
+        <div className="card">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <h3 style={{ marginBottom: 0 }}>Item 성과 테이블</h3>
               <button
@@ -1119,9 +1138,7 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-        </div>
       </div>
     </section>
   );
 }
-
