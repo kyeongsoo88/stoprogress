@@ -47,11 +47,23 @@ export function aggregateByUnit(
   const value_2025 = `${metric}_2025` as keyof CSVRecord;
 
   if (unit === "day") {
-    return data.map((row) => ({
-      label: row.date,
-      value_2026: row[value_2026] as number,
-      value_2025: row[value_2025] as number,
-    }));
+    const buckets: Record<string, { value_2026: number; value_2025: number }> = {};
+    data.forEach((row) => {
+      const label = row.date;
+      if (!buckets[label]) {
+        buckets[label] = { value_2026: 0, value_2025: 0 };
+      }
+      buckets[label].value_2026 += row[value_2026] as number;
+      buckets[label].value_2025 += row[value_2025] as number;
+    });
+
+    return Object.entries(buckets)
+      .sort()
+      .map(([label, values]) => ({
+        label,
+        value_2026: values.value_2026,
+        value_2025: values.value_2025,
+      }));
   }
 
   if (unit === "week_fixed_7d") {

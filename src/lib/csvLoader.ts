@@ -144,7 +144,7 @@ export async function loadCSV(): Promise<CSVRecord[]> {
         Discount: 0,
         MSRP: 0,
         season: row.Season, 
-        item: row.Item,
+        item: row.Item, 
         date: row.date
       };
       current.revenue += parseNumber(row.revenue);
@@ -156,43 +156,61 @@ export async function loadCSV(): Promise<CSVRecord[]> {
 
     const used2025Keys = new Set<string>();
 
-    // 2. 2026 데이터 기준으로 2025 데이터 매칭
-    const merged: CSVRecord[] = records2026.map((row2026) => {
-      const key = buildComparisonKey(
-        row2026.date,
-        comparableSeason(row2026.Season),
-        row2026.Item
-      );
+    // 2. 2026 데이터 미리 합산 (중복 행 제거)
+    // 2026년 데이터도 날짜|시즌|아이템 별로 합산해야 2025년 데이터와 1:1 비교가 가능합니다.
+    const map2026 = new Map<string, { revenue: number; COGS: number; Discount: number; MSRP: number; season: string; item: string; date: string }>();
+    records2026.forEach((row) => {
+        // 주의: 2026년 키는 comparableSeason(2025년 기준)으로 생성하여 2025와 매칭
+        const key = buildComparisonKey(row.date, comparableSeason(row.Season), row.Item);
+        const current = map2026.get(key) ?? {
+            revenue: 0,
+            COGS: 0,
+            Discount: 0,
+            MSRP: 0,
+            season: row.Season, // 원본 시즌 유지
+            item: row.Item,
+            date: row.date
+        };
+        current.revenue += parseNumber(row.revenue);
+        current.COGS += parseNumber(row.COGS);
+        current.Discount += parseNumber(row.Discount);
+        current.MSRP += parseNumber(row.MSRP);
+        map2026.set(key, current);
+    });
+
+    // 3. 2026 데이터 기준으로 2025 데이터 매칭 (합산된 map2026 사용)
+    const merged: CSVRecord[] = [];
+    map2026.forEach((val2026, key) => {
       const row2025 = map2025.get(key);
       if (row2025) {
         used2025Keys.add(key);
       }
 
-      const revenue_2026 = parseNumber(row2026.revenue);
-      const COGS_2026 = parseNumber(row2026.COGS);
-      const Discount_2026 = parseNumber(row2026.Discount);
-      const msrp_2026 = parseNumber(row2026.MSRP);
+      const revenue_2026 = val2026.revenue;
+      const COGS_2026 = val2026.COGS;
+      const Discount_2026 = val2026.Discount;
+      const msrp_2026 = val2026.MSRP;
 
       const revenue_2025 = row2025 ? row2025.revenue : 0;
       const COGS_2025 = row2025 ? row2025.COGS : 0;
       const Discount_2025 = row2025 ? row2025.Discount : 0;
       const msrp_2025 = row2025 ? row2025.MSRP : 0;
 
-      return {
-        date: row2026.date || "",
-        season: row2026.Season || "",
-        season_2025: comparableSeason(row2026.Season || ""),
-        item: row2026.Item || "",
+      merged.push({
+        date: val2026.date,
+        season: val2026.season,
+        season_2025: comparableSeason(val2026.season),
+        item: val2026.item,
         revenue_2026,
         revenue_2025,
         profit_2026: revenue_2026 - COGS_2026 - Discount_2026,
         profit_2025: revenue_2025 - COGS_2025 - Discount_2025,
         msrp_2026,
         msrp_2025,
-      };
+      });
     });
 
-    // 3. 매칭되지 않은 나머지 2025 데이터 추가 (날짜와 시즌을 2026 기준으로 변환)
+    // 4. 매칭되지 않은 나머지 2025 데이터 추가 (날짜와 시즌을 2026 기준으로 변환)
     map2025.forEach((value, key) => {
       if (!used2025Keys.has(key)) {
         const revenue_2025 = value.revenue;

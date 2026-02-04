@@ -20,8 +20,8 @@ export default function Dashboard() {
   const [csvData, setCsvData] = useState<CSVRecord[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [startDate, setStartDate] = useState("2026-01-01");
-  const [endDate, setEndDate] = useState("2026-01-30");
+  const [startDate, setStartDate] = useState("2026-02-01");
+  const [endDate, setEndDate] = useState("2026-02-04");
   const [season, setSeason] = useState("전체");
   const [selectedItem, setSelectedItem] = useState("전체");
   const [unit, setUnit] = useState<UnitKey>("day");
@@ -282,27 +282,45 @@ export default function Dashboard() {
   // 이번달 예상 매출 (전년 동기 진척률 기반)
   // startDate를 기준으로 해당 월을 판단하여 예측
   const monthForecast = useMemo(() => {
-    if (!csvData || !startDate || !endDate) return null;
+    if (!csvData) return null;
 
-    // 1. startDate를 기준으로 해당 월 판단
+    // 1. 데이터가 있는 마지막 날짜 확인 (2026년 데이터 중 가장 늦은 날짜)
+    // 단, 이번달(2월) 데이터 내에서 확인해야 함
     const startObj = new Date(startDate);
-    if (isNaN(startObj.getTime())) return null;
-
-    const year = startObj.getFullYear(); // 2026
-    const month = startObj.getMonth(); // 0-indexed
-    const endObj = new Date(endDate);
-    const endDay = endObj.getDate(); // endDate의 날짜 (예: 28일)
-
-    // 이번달 시작일 (YYYY-MM-01)
-    const startOfMonth = `${year}-${String(month + 1).padStart(2, "0")}-01`;
-    const monthStr = startOfMonth.slice(0, 7); // "2026-02"
+    const year = startObj.getFullYear();
+    const month = startObj.getMonth();
+    const monthStr = `${year}-${String(month + 1).padStart(2, "0")}`; // "2026-02"
     
-    // 2025년 동월 정보
-    const startOfMonth2025 = `2025-${String(month + 1).padStart(2, "0")}-01`;
-    const endOfPeriod2025 = `2025-${String(month + 1).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
-    const lastDayOf2025 = new Date(2025, month + 1, 0).getDate();
-    const endOfMonth2025 = `2025-${String(month + 1).padStart(2, "0")}-${String(lastDayOf2025).padStart(2, "0")}`;
+    // 이번달에 해당하는 데이터만 필터링해서 마지막 날짜 찾기
+    let lastDateInMonth = "";
+    csvData.forEach(row => {
+      if (row.date.startsWith(monthStr)) {
+        // 주의: csvLoader는 2025년 데이터도 2026년 날짜로 매핑해서 가지고 있음 (이 경우 revenue_2026은 0)
+        // 따라서 단순히 날짜만 보면 2025년 데이터 때문에 월말까지 있는 것으로 착각하게 됨
+        // revenue_2026이 실제로 존재하는(0이 아닌) 날짜 중 가장 늦은 날짜를 찾아야 함
+        if (row.revenue_2026 !== 0) {
+          if (row.date > lastDateInMonth) {
+            lastDateInMonth = row.date;
+          }
+        }
+      }
+    });
 
+    // 만약 이번달 매출이 전무하다면(월초라 아직 0원이거나 데이터가 없거나)
+    // 데이터가 있는 날짜를 못 찾을 수 있음.
+    // 이 경우 예측을 할 수 없으므로 null 리턴
+    if (!lastDateInMonth) {
+        return null;
+    }
+
+    // 비교 기준일: 데이터가 존재하는 마지막 날짜 (예: 2026-02-01)
+    const targetDateStr = lastDateInMonth;
+    const startOfMonth = `${monthStr}-01`;
+
+    // 2025년 비교 기간: 2월 1일 ~ targetDateStr의 2025년 대응 날짜
+    // 주의: csvLoader에서 2025 데이터는 2026 날짜로 매핑되어 있음.
+    // 따라서 2026 날짜 기준으로 그대로 비교하면 됨.
+    
     // 필터링 헬퍼
     const matchesFilters = (row: CSVRecord) => {
       if (selectedItem !== "전체" && row.item !== selectedItem) return false;
@@ -310,31 +328,26 @@ export default function Dashboard() {
       return true;
     };
 
-    let revenue2026_Current = 0; // 2026년 현재까지 매출 (startDate ~ endDate)
-    let revenue2025_SamePeriod = 0; // 2025년 동일 기간 매출 (2월 1일 ~ 2월 endDay일)
+    let revenue2026_Current = 0; // 2026년 현재까지 매출 (1일 ~ 마지막 데이터 날짜)
+    let revenue2025_SamePeriod = 0; // 2025년 동일 기간 매출 (1일 ~ 마지막 데이터 날짜)
     let revenue2025_TotalMonth = 0; // 2025년 해당 월 전체 매출
 
     // csvData 전체 순회
     csvData.forEach((row) => {
       if (!matchesFilters(row)) return;
 
-      // 2026년 현재까지 매출 (startDate ~ endDate)
-      if (row.date >= startDate && row.date <= endDate) {
+      // 2026년 현재까지 매출 (이번달 1일 ~ 데이터 마지막 날짜)
+      if (row.date >= startOfMonth && row.date <= targetDateStr) {
         revenue2026_Current += row.revenue_2026;
-      }
-
-      // 2025년 데이터 계산
-      // csvLoader에서 2025 데이터는 2026 날짜로 매핑되어 있음
-      // 따라서 2026 날짜 기준으로 2025 매출을 합산
-      
-      // 2025년 동일 기간 (2월 1일 ~ 2월 endDay일)
-      // row.date가 2026-02-01 ~ 2026-02-endDay 범위에 있으면
-      if (row.date >= startOfMonth && row.date <= endOfPeriod2025.replace("2025", "2026")) {
+        
+        // 2025년 동일 기간 (2월 1일 ~ 데이터 마지막 날짜)
+        // csvLoader가 2025 데이터를 2026 날짜로 매핑해두었으므로, 날짜 조건 동일하게 적용
         revenue2025_SamePeriod += row.revenue_2025;
       }
 
       // 2025년 해당 월 전체 매출
       // row.date가 해당 월에 속하는지 확인 (2026-02-XX 형태)
+      // csvLoader가 2025년 2월 28일 데이터 등을 2026년 2월로 매핑해서 가져옴
       if (row.date.startsWith(monthStr)) {
         revenue2025_TotalMonth += row.revenue_2025;
       }
@@ -354,7 +367,7 @@ export default function Dashboard() {
       progressRate: Math.round(progressRate * 1000) / 10, // xx.x%
       currentRevenue: revenue2026_Current
     };
-  }, [csvData, startDate, endDate, selectedItem, season]);
+  }, [csvData, startDate, selectedItem, season]);
 
   const itemsForTable = useMemo(
     () =>
@@ -865,9 +878,9 @@ export default function Dashboard() {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div className="card">
-            <h3>Item YoY (일별)</h3>
-            <div className="muted">
-              선택 Item: {selectedItem === "전체" ? "전체 (모든 아이템 합계)" : selectedItem}
+            <h3>{selectedItem === "전체" ? "전체 일별 성장률 (YoY)" : `${selectedItem} 일별 성장률 (YoY)`}</h3>
+            <div className="muted" style={{ marginBottom: "10px" }}>
+              100% 기준선: 전년과 동일 실적 (위쪽: 성장, 아래쪽: 역성장)
             </div>
             <Plot
               data={[
@@ -876,42 +889,51 @@ export default function Dashboard() {
                   y: itemYoySeries.map((point) => point.y),
                   type: "scatter",
                   mode: "lines+markers",
-                  name: "Item YoY",
+                  name: "YoY %",
                   line: { color: "#f97316", width: 3 },
-                  marker: { size: 6 },
-                  hovertemplate: "%{x}<br>%{y:.1f}%<extra></extra>",
+                  marker: { 
+                    size: 8,
+                    color: itemYoySeries.map((point) => (point.y !== null && point.y >= 100) ? "#10b981" : "#ef4444"),
+                    line: { width: 1, color: "#fff" }
+                  },
+                  hovertemplate: "<b>%{x}</b><br>YoY: %{y:.1f}%<extra></extra>",
                 },
                 {
                   x: itemYoySeries.map((point) => point.x),
                   y: itemYoySeries.map(() => baseline),
                   type: "scatter",
                   mode: "lines",
-                  name: "100% 기준선",
-                  line: { color: "#94a3b8", width: 2, dash: "dot" },
+                  name: "기준(100%)",
+                  line: { color: "#64748b", width: 2, dash: "dash" },
                   hoverinfo: "skip",
                 },
               ]}
               layout={{
-                height: 240,
-                margin: { l: 50, r: 20, t: 20, b: 40 },
+                height: 280,
+                margin: { l: 60, r: 20, t: 30, b: 60 },
                 yaxis: {
-                  title: "YoY (%)",
-                  range: [selectedYoyMin - selectedYoyPadding, selectedYoyMax + selectedYoyPadding],
+                  title: { text: "성장률 (YoY)", font: { size: 12 } },
+                  range: [0, selectedYoyMax * 1.1],
+                  fixedrange: false, // 사용자가 줌 가능하도록
                   ticksuffix: "%",
                   tickformat: ".0f",
                   gridcolor: "#e5e7eb",
+                  zeroline: true,
+                  zerolinecolor: "#94a3b8",
                 },
                 paper_bgcolor: "rgba(0,0,0,0)",
                 plot_bgcolor: "#ffffff",
-                legend: { orientation: "h" },
+                showlegend: false, // 범례 숨김 (심플하게)
                 xaxis: {
-                  title: "Date",
+                  title: "날짜",
                   gridcolor: "#f1f5f9",
-                  tickangle: -30,
+                  tickangle: -45,
                   automargin: true,
+                  tickformat: "%m-%d", // 02-01 형식으로 포맷팅
                 },
               }}
               config={{ displayModeBar: false, responsive: true }}
+              style={{ width: "100%" }}
             />
           </div>
 
